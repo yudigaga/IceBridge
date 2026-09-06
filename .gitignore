@@ -69,3 +69,25 @@ tools/**/build/
 
 
 tools/icebridge-backup-pre-rollback-0.0.73/
+
+# Local Kotlin/Android native build state
+/.kotlin/
+/.cxx/
+/.externalNativeBuild/
+*.hprof
+
+# Historical one-off UI captures and local investigation output
+/bridge-settings-056.png
+/main-052-late.png
+/main-052.png
+/main-056.png
+/rule-config-0.0.51-final.png
+/rule-config-0.0.51.png
+/rule-config-052-live.png
+/rule-config-052-live2.png
+/rule-config-052.png
+/rule-config-053.png
+/rule-config-056.png
+/rule-dialog-053.png
+/rule-screen-lines.txt
+/tools/legacy-v67-recovery/
