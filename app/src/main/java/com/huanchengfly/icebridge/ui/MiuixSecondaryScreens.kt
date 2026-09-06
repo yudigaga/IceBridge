@@ -2,6 +2,7 @@ package com.huanchengfly.icebridge.ui
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -127,7 +128,27 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
     } }
     if(dialog) AlertDialog(onDismissRequest={dialog=false}, title={Text(text="选择解冻服务")}, text={Column { TextButton(onClick={a.selectWorkMode(WorkModeFragment.MODE_ICEBOX);dialog=false}) { Text(text="IceBox 模式（推荐）") }; TextButton(onClick={a.selectWorkMode(WorkModeFragment.MODE_ROOT);dialog=false}) { Text(text="Root 模式") } }}, confirmButton={TextButton(onClick={dialog=false}) { Text(text="取消") }})
 }
-@Composable private fun About(a: AboutActivity) = MiuixPage("关于") { p -> SettingsColumn(p) { Card(Modifier.fillMaxWidth()) { InfoRow("IceBridge", "IceBox 应用解冻、链接自动恢复与跳转工具"); InfoRow("作者", "yudigaga"); InfoRow("版本", PackageUtil.getVersionName(a)) }; SectionTitle("使用说明"); Card(Modifier.fillMaxWidth()) { InfoRow("推荐作用域", "LSPosed 中仅勾选 system"); InfoRow("工作方式", "system 识别被冻结应用的链接，异步解冻后再恢复原始跳转。") } } }
+@Composable private fun About(a: AboutActivity) = MiuixPage("关于") { p ->
+    SettingsColumn(p) {
+        Card(Modifier.fillMaxWidth()) {
+            InfoRow("IceBridge", "IceBox 应用解冻、链接自动恢复与跳转工具")
+            InfoRow("作者", "yudigaga")
+            InfoRow("版本", PackageUtil.getVersionName(a))
+            SuperArrow(
+                title = "GitHub 源码",
+                summary = GITHUB_REPOSITORY,
+                onClick = { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPOSITORY))) }
+            )
+        }
+        SectionTitle("使用说明")
+        Card(Modifier.fillMaxWidth()) {
+            InfoRow("推荐作用域", "LSPosed 中仅勾选 system")
+            InfoRow("工作方式", "system 识别被冻结应用的链接，异步解冻后再恢复原始跳转。")
+        }
+    }
+}
+
+private const val GITHUB_REPOSITORY = "https://github.com/yudigaga/IceBridge"
 @Composable private fun InfoRow(t: String, s: String) { Column(Modifier.fillMaxWidth().padding(horizontal=16.dp, vertical=14.dp)) { Text(text=t, fontSize=18.sp); Text(text=s, modifier=Modifier.padding(top=4.dp), fontSize=14.sp, color=MiuixTheme.colorScheme.onSurfaceVariantSummary) } }
 @Composable private fun MiuixPage(t: String, c: @Composable (PaddingValues) -> Unit) = Scaffold(topBar={TopAppBar(title=t, largeTitle=t)}, content=c)
 @Composable private fun SettingsColumn(p: PaddingValues, c: @Composable () -> Unit) { Column(Modifier.fillMaxSize().padding(p).padding(horizontal=16.dp).verticalScroll(rememberScrollState()), verticalArrangement=Arrangement.spacedBy(12.dp)) { c() } }
