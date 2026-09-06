@@ -3,7 +3,7 @@ apply plugin: 'kotlin-android'
 apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
 // Use an isolated output directory so a locked legacy APK cannot block packaging.
-buildDir = file('build71')
+buildDir = file('build73')
 
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 def keystoreProperties = new Properties()
@@ -18,8 +18,8 @@ android {
         applicationId "com.huanchengfly.icebridge"
         minSdkVersion 26
         targetSdkVersion 33
-        versionCode 72
-        versionName "0.0.72"
+        versionCode 73
+        versionName "0.0.73"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -65,7 +65,7 @@ android {
 // Keep installable artifacts uniquely named so a transferred APK cannot be confused with an older app-debug.apk.
 android.applicationVariants.all { variant ->
     variant.outputs.all { output ->
-        output.outputFileName = "IceBridge-v0.0.71-${variant.buildType.name}.apk"
+        output.outputFileName = "IceBridge-v0.0.73-${variant.buildType.name}.apk"
     }
 }
 dependencies {

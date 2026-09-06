@@ -24,5 +24,5 @@ For setup and the recommended LSPosed scope, see `docs/NATIVE_LINK_CAPTURE.md`. 
 ./gradlew assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/IceBridge-v0.0.73-debug.apk`.
+The debug APK is written to `app/build73/outputs/apk/debug/IceBridge-v0.0.73-debug.apk`.
 

@@ -1,6 +1,6 @@
 id=com.huanchengfly.icebridge
 name=Ice Bridge
-version=0.0.69
-versionCode=69
+version=0.0.73
+versionCode=73
 minApiVersion=102
 targetApiVersion=102
