@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <array name="xposed_scope">
+        <!-- Required: global Intent and clipboard hooks run in system_server. -->
+        <item>system</item>
+        <!--
+            Optional: add a WebView host only when WebView observation is needed. IceBridge
+            hooks framework WebView.loadUrl APIs only; it never hooks that app's activities,
+            WebViewClient subclasses, or business logic.
+        -->
+    </array>
+</resources>

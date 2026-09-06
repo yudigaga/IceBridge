@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ Monet / Material You system palette. -->
+    <color name="colorPrimary">@android:color/system_accent1_600</color>
+    <color name="colorPrimaryDark">@android:color/system_accent1_700</color>
+    <color name="colorAccent">@android:color/system_accent1_600</color>
+    <color name="colorAccentTrans">@android:color/system_accent1_100</color>
+    <color name="white">@android:color/system_neutral1_0</color>
+    <color name="text_color_primary">@android:color/system_neutral1_900</color>
+    <color name="text_color_secondary">@android:color/system_neutral2_700</color>
+    <color name="icon_color">@android:color/system_neutral2_700</color>
+    <color name="color_divider">@android:color/system_neutral2_200</color>
+    <color name="color_space">@android:color/system_neutral1_50</color>
+    <color name="colorPlaceHolder">@android:color/system_neutral1_100</color>
+</resources>

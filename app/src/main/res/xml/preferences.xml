@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:tools="http://schemas.android.com/tools"
+    xmlns:android="http://schemas.android.com/apk/res/android">
+    <SwitchPreference
+        android:key="@string/key_enhance_mode_status"
+        android:title="@string/title_enhance_mode"
+        android:iconSpaceReserved="false"
+        tools:ignore="UnusedAttribute" />
+    <SwitchPreference
+        android:key="@string/key_auto_link_bridge"
+        android:title="@string/title_auto_link_bridge"
+        android:summary="@string/summary_auto_link_bridge"
+        android:summaryOn="@string/summary_auto_link_bridge_on"
+        android:summaryOff="@string/summary_auto_link_bridge_off"
+        android:defaultValue="false"
+        android:iconSpaceReserved="false" />
+    <SwitchPreference
+        android:key="@string/key_auto_open_links"
+        android:title="@string/title_auto_open_links"
+        android:summary="@string/summary_auto_open_links"
+        android:summaryOn="@string/summary_auto_open_links_on"
+        android:summaryOff="@string/summary_auto_open_links_off"
+        android:defaultValue="false"
+        android:iconSpaceReserved="false" />
+    <SwitchPreference
+        android:key="@string/key_native_link_capture"
+        android:title="@string/title_native_link_capture"
+        android:summary="@string/summary_native_link_capture"
+        android:summaryOn="@string/summary_native_link_capture_on"
+        android:summaryOff="@string/summary_native_link_capture_off"
+        android:defaultValue="false"
+        android:iconSpaceReserved="false" />
+    <SwitchPreference
+        android:key="@string/key_payment_sdk_bridge"
+        android:title="@string/title_payment_sdk_bridge"
+        android:summary="@string/summary_payment_sdk_bridge"
+        android:summaryOn="@string/summary_payment_sdk_bridge_on"
+        android:summaryOff="@string/summary_payment_sdk_bridge_off"
+        android:defaultValue="true"
+        android:iconSpaceReserved="false" />
+    <SwitchPreference
+        android:key="@string/key_hide_bridge_from_recents"
+        android:title="@string/title_hide_bridge_from_recents"
+        android:summary="@string/summary_hide_bridge_from_recents"
+        android:defaultValue="true"
+        android:iconSpaceReserved="false" />
+    <SwitchPreference
+        android:key="@string/key_only_frozen_link_targets"
+        android:title="@string/title_only_frozen_link_targets"
+        android:summary="@string/summary_only_frozen_link_targets"
+        android:defaultValue="true"
+        android:iconSpaceReserved="false" />
+    <SwitchPreference
+        android:key="@string/key_link_browser_fallback"
+        android:title="@string/title_link_browser_fallback"
+        android:summary="@string/summary_link_browser_fallback"
+        android:defaultValue="true"
+        android:iconSpaceReserved="false" />
+    <SwitchPreference
+        android:key="@string/key_clipboard_auto_open"
+        android:title="@string/title_clipboard_auto_open"
+        android:summary="@string/summary_clipboard_auto_open"
+        android:defaultValue="false"
+        android:iconSpaceReserved="false" />
+    <EditTextPreference
+        android:key="@string/key_custom_url_mappings"
+        android:title="@string/title_custom_url_mappings"
+        android:summary="@string/summary_custom_url_mappings"
+        android:dialogTitle="@string/title_custom_url_mappings"
+        android:iconSpaceReserved="false" />
+    <SwitchPreference
+        android:key="@string/key_module_debug_logging"
+        android:title="@string/title_module_debug_logging"
+        android:summary="@string/summary_module_debug_logging"
+        android:defaultValue="false"
+        android:iconSpaceReserved="false" />
+    <Preference
+        android:key="@string/key_permission_status"
+        android:title="@string/title_permission_status"
+        android:summary="@string/summary_permission_status"
+        android:iconSpaceReserved="false" />
+    <Preference
+        android:key="@string/key_export_diagnostic_logs"
+        android:title="@string/title_export_diagnostic_logs"
+        android:summary="@string/summary_export_diagnostic_logs"
+        android:iconSpaceReserved="false" />
+    <Preference
+        android:title="@string/title_scope_requirements"
+        android:summary="@string/summary_enhance_scope"
+        android:iconSpaceReserved="false" />
+</PreferenceScreen>
+
+
+

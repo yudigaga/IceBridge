@@ -1,0 +1,13 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project.plugins.hasPlugin("com.android.application")) {
+            project.tasks.register("printReleaseRuntimeFiles") {
+                doLast {
+                    project.configurations.getByName("releaseRuntimeClasspath").files.each { file ->
+                        println(file.absolutePath)
+                    }
+                }
+            }
+        }
+    }
+}

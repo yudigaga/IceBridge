@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+>
+
+    <uses-permission android:name="com.catchingnow.icebox.SDK" />
+    <uses-permission android:name="com.catchingnow.icebox.STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <application
+        android:name=".base.MyApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        tools:ignore="GoogleAppIndexingWarning">
+        <receiver
+            android:name="com.catchingnow.icebox.sdk_client.StateReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.catchingnow.icebox.SDK_STATE" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".receivers.LinkRecoveryReceiver"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Explicit event endpoint used only by the system-server observer. -->
+        <receiver
+            android:name=".receivers.NativeLinkReceiver"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL">
+            <intent-filter>
+                <action android:name="com.huanchengfly.icebridge.action.NATIVE_LINK_CAPTURED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".services.ClipboardLinkService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <activity android:name=".activities.EnhanceModeActivity" />
+        <activity android:name=".activities.RuleConfigActivity" />
+
+        <activity
+            android:name=".activities.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".activities.BridgeActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:label="@string/bridge_description"
+            android:theme="@style/AppTheme.Translucent">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="groupinfo"
+                    android:scheme="sinaweibo" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="groupfeed"
+                    android:scheme="sinaweibo" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="searchall"
+                    android:scheme="sinaweibo" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="detail"
+                    android:scheme="sinaweibo" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="seccomment"
+                    android:scheme="sinaweibo" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="weibo.cn"
+                    android:path="/qr/detail"
+                    android:scheme="http" />
+                <data
+                    android:host="m.weibo.cn"
+                    android:pathPrefix="/status"
+                    android:scheme="http" />
+                <data
+                    android:host="m.weibo.cn"
+                    android:pathPrefix="/status"
+                    android:scheme="https" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="userinfo"
+                    android:scheme="sinaweibo" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.BROWSABLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data
+                    android:host="m.weibo.cn"
+                    android:pathPrefix="/u"
+                    android:scheme="http" />
+                <data
+                    android:host="m.weibo.cn"
+                    android:pathPrefix="/u"
+                    android:scheme="https" />
+                <data
+                    android:host="weibo.com"
+                    android:pathPrefix="/u"
+                    android:scheme="http" />
+                <data
+                    android:host="weibo.com"
+                    android:pathPrefix="/u"
+                    android:scheme="https" />
+            </intent-filter>
+            <intent-filter>
+                <data android:scheme="mqq" />
+                <data android:scheme="mqqapi" />
+                <data android:scheme="mqqopensdkapi" />
+                <data android:scheme="wtloginmqq" />
+                <data android:scheme="mqqwpa" />
+                <data android:scheme="weixin" />
+                <data android:scheme="tbfrs" />
+                <data android:scheme="tbpb" />
+                <data android:scheme="zhihu" />
+                <data android:scheme="baiduyun" />
+                <data android:scheme="yundownload" />
+                <data android:scheme="yunacceptinvite" />
+                <data android:scheme="bdnetdiskwap" />
+                <data android:scheme="bdnetdisk" />
+                <data android:scheme="yunacceptsharedir" />
+                <data android:scheme="bilibili" />
+                <data android:scheme="qqmusic" />
+                <data android:scheme="kugou" />
+                <data android:scheme="kwapp" />
+                <data android:scheme="douban" />
+                <data android:scheme="alipays" />
+                <data android:scheme="alipayqr" />
+                <data android:scheme="alipayauth" />
+                <data android:scheme="alipayre" />
+                <data android:scheme="orpheus" />
+                <data android:scheme="orpheus-cortana" />
+                <data android:scheme="doubanradio" />
+                <data android:scheme="taobao" />
+                <data android:scheme="youku" />
+
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+            </intent-filter>
+            <intent-filter>
+                <data
+                    android:host="unidispatch"
+                    android:scheme="com.baidu.tieba" />
+
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+            </intent-filter>
+            <intent-filter>
+                <data
+                    android:host="qm.qq.com"
+                    android:scheme="http" />
+
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+            </intent-filter>
+            <intent-filter>
+                <data
+                    android:host="qq"
+                    android:scheme="imto" />
+
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+            </intent-filter>
+            <intent-filter>
+                <data
+                    android:host="weixin.qq.com"
+                    android:pathPrefix="/r/"
+                    android:scheme="http" />
+
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".activities.AboutActivity" />
+        <activity android:name=".activities.IntroActivity" />
+        <activity
+            android:name=".activities.ShareBridgeActivity"
+            android:exported="true"
+            android:label="@string/share_bridge_description"
+            android:theme="@style/AppTheme.Translucent">
+            <!--
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".activities.PermissionActivity" />
+        <activity android:name=".activities.BridgePreferencesActivity" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <provider
+            android:name=".providers.ConfigProvider"
+            android:authorities="com.huanchengfly.icebridge.providers.ConfigProvider"
+            android:exported="true"
+                android:writePermission="android.permission.INTERACT_ACROSS_USERS_FULL"
+            tools:ignore="ExportedContentProvider" />
+    </application>
+
+</manifest>

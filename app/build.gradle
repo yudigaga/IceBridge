@@ -1,0 +1,111 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+
+// Use an isolated output directory so a locked legacy APK cannot block packaging.
+buildDir = file('build71')
+
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    namespace "com.huanchengfly.icebridge"
+    compileSdkVersion 34
+    defaultConfig {
+        applicationId "com.huanchengfly.icebridge"
+        minSdkVersion 26
+        targetSdkVersion 33
+        versionCode 72
+        versionName "0.0.72"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                v2SigningEnabled true
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            debuggable false
+            jniDebuggable false
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+            zipAlignEnabled true
+            multiDexEnabled true
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+        encoding = 'UTF-8'
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+    buildFeatures {
+        buildConfig true
+        compose true
+    }
+}
+
+
+// Keep installable artifacts uniquely named so a transferred APK cannot be confused with an older app-debug.apk.
+android.applicationVariants.all { variant ->
+    variant.outputs.all { output ->
+        output.outputFileName = "IceBridge-v0.0.71-${variant.buildType.name}.apk"
+    }
+}
+dependencies {
+    implementation 'com.android.support:support-annotations:28.0.0'
+    annotationProcessor "com.android.support:support-annotations:28.0.0"
+    implementation 'com.github.bumptech.glide:glide:4.11.0'
+    annotationProcessor 'com.github.bumptech.glide:compiler:4.11.0'
+    implementation 'com.github.bumptech.glide:okhttp3-integration:4.11.0'
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    compileOnly 'io.github.libxposed:api:102.0.0'
+    implementation 'androidx.appcompat:appcompat:1.1.0'
+    implementation 'androidx.constraintlayout:constraintlayout:1.1.3'
+    implementation 'com.google.android.material:material:1.3.0-alpha02'
+    implementation 'androidx.preference:preference:1.1.1'
+    implementation 'androidx.activity:activity-compose:1.9.3'
+    implementation 'androidx.compose.ui:ui:1.7.0'
+    implementation 'androidx.compose.foundation:foundation:1.7.0'
+    implementation 'androidx.compose.material3:material3:1.3.0'
+    implementation 'androidx.compose.ui:ui-tooling-preview:1.7.0'
+    debugImplementation 'androidx.compose.ui:ui-tooling:1.7.0'
+    implementation 'top.yukonga.miuix.kmp:miuix:0.2.6'
+    testImplementation 'junit:junit:4.13'
+    androidTestImplementation 'androidx.test:runner:1.2.0'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.2.0'
+    implementation 'com.yanzhenjie:permission:2.0.0-rc12'
+    implementation 'com.squareup.okhttp3:okhttp:4.5.0'
+    implementation 'com.google.code.gson:gson:2.8.6'
+    implementation 'org.litepal.android:java:3.0.0'
+    implementation 'com.github.tsy12321:MyOkHttp:v1.1.4'
+}
+
+
+
+
+
+
+
+
+
+
+
+
