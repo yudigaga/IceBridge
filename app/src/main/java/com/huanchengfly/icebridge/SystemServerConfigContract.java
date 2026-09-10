@@ -17,6 +17,7 @@ public final class SystemServerConfigContract {
     public static final String KEY_CLIPBOARD_AUTO_OPEN = "clipboard_auto_open";
     public static final String KEY_PAYMENT_SDK_BRIDGE = "payment_sdk_bridge";
     public static final String KEY_SNAPSHOT_STATUS = "snapshot_status";
+    public static final String KEY_SNAPSHOT_ERROR = "snapshot_error";
     public static final String KEY_FROZEN_PACKAGES = "frozen_packages";
     public static final String KEY_ONLINE_HOST_RULES = "online_host_rules";
     public static final String STATUS_OK = "ok";
@@ -28,16 +29,12 @@ public final class SystemServerConfigContract {
 
     public static Snapshot parse(Bundle snapshot) {
         if (snapshot == null) {
-            return Snapshot.unavailable("null-snapshot");
+            return parseValues(null, null, null, false, false, false, false, true, null, null);
         }
-        if (snapshot.getInt(KEY_SCHEMA_VERSION, 0) != SCHEMA_VERSION) {
-            return Snapshot.unavailable("schema-invalid");
-        }
-        String status = snapshot.getString(KEY_SNAPSHOT_STATUS);
-        if (!STATUS_OK.equals(status)) {
-            return Snapshot.unavailable(status == null ? "status-missing" : status);
-        }
-        return Snapshot.available(
+        return parseValues(
+                snapshot.getInt(KEY_SCHEMA_VERSION, 0),
+                snapshot.getString(KEY_SNAPSHOT_STATUS),
+                snapshot.getString(KEY_SNAPSHOT_ERROR),
                 snapshot.getBoolean(KEY_XHS_RECOVERY, false),
                 snapshot.getBoolean(KEY_AUTO_OPEN_LINKS, false),
                 snapshot.getBoolean(KEY_NATIVE_LINK_CAPTURE, false),
@@ -47,6 +44,26 @@ public final class SystemServerConfigContract {
                 snapshot.getStringArray(KEY_ONLINE_HOST_RULES));
     }
 
+    // Kept independent of Android Bundle so the contract rules can be covered by local JVM tests.
+    static Snapshot parseValues(Integer schemaVersion, String status, String error,
+                                boolean recoveryEnabled, boolean autoOpenLinks,
+                                boolean nativeLinkCapture, boolean clipboardAutoOpen,
+                                boolean paymentSdkBridge, String[] frozenPackages,
+                                String[] onlineHostRules) {
+        if (schemaVersion == null) {
+            return Snapshot.unavailable("null-snapshot");
+        }
+        if (schemaVersion != SCHEMA_VERSION) {
+            return Snapshot.unavailable("schema-invalid");
+        }
+        if (!STATUS_OK.equals(status)) {
+            return Snapshot.unavailable(error == null || error.isEmpty()
+                    ? (status == null ? "status-missing" : status)
+                    : error);
+        }
+        return Snapshot.available(recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
+                paymentSdkBridge, frozenPackages, onlineHostRules);
+    }
     public static final class Snapshot {
         public final boolean available;
         public final boolean recoveryEnabled;

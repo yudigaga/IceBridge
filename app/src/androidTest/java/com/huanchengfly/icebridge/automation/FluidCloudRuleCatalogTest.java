@@ -9,18 +9,10 @@ import static org.junit.Assert.assertTrue;
 
 public class FluidCloudRuleCatalogTest {
     @Test
-    public void importsAuditedFluidCloudHostRules() {
-        assertEquals("com.jingdong.app.mall", FluidCloudRuleCatalog.builtInHostMappings().get("jd.com"));
-        assertEquals("com.baidu.netdisk", FluidCloudRuleCatalog.builtInHostMappings().get("pan.baidu.com"));
-        assertEquals("com.smile.gifmaker", FluidCloudRuleCatalog.builtInHostMappings().get("kuaishou.com"));
-    }
-
-    @Test
-    public void preservesDistinctCandidatesForTheSameFluidCloudHost() {
-        assertEquals("tv.danmaku.bili", FluidCloudRuleCatalog.builtInHostCandidates().get("bilibili.com").get(0));
-        assertTrue(FluidCloudRuleCatalog.builtInHostCandidates().get("bilibili.com").contains("com.example.piliplus"));
-        assertEquals("com.sankuai.meituan", FluidCloudRuleCatalog.builtInHostCandidates().get("dpurl.cn").get(0));
-        assertTrue(FluidCloudRuleCatalog.builtInHostCandidates().get("dpurl.cn").contains("com.sankuai.meituan.takeoutnew"));
+    public void doesNotBundleHttpHostRoutingRules() {
+        assertTrue(FluidCloudRuleCatalog.builtInHostMappings().isEmpty());
+        assertTrue(FluidCloudRuleCatalog.builtInHostCandidates().isEmpty());
+        assertTrue(FluidCloudRuleCatalog.builtInRuleEntries().isEmpty());
     }
 
     @Test

@@ -22,38 +22,11 @@ public final class FluidCloudRuleCatalog {
     private static final Map<String, String> HANDOFF_SUMMARIES;
 
     static {
+        // HTTP(S) routing is intentionally data-driven. Do not put host candidates here:
+        // runtime rules must come from the online cache or explicit user rules only. This class
+        // remains responsible for audited fixed deep-link conversions in rewriteForTarget().
         Map<String, List<String>> candidates = new LinkedHashMap<>();
         Map<String, String> hosts = new LinkedHashMap<>();
-        putHosts(candidates, "com.xingin.xhs", "xiaohongshu.com", "xhslink.com");
-        putHosts(candidates, "com.sina.weibo", "weibo.com", "weibo.cn", "sinaweibo.cn");
-        putHosts(candidates, "com.zhihu.android", "zhihu.com", "zhimg.com");
-        putHosts(candidates, "com.eg.android.AlipayGphone", "alipay.com", "alipay.cn");
-        putHosts(candidates, "com.twitter.android", "x.com", "twitter.com");
-        putHosts(candidates, "com.google.android.youtube", "youtube.com", "youtu.be");
-        putHosts(candidates, "com.instagram.android", "instagram.com");
-        putHosts(candidates, "org.telegram.messenger", "t.me", "telegram.me");
-        putHosts(candidates, "tv.danmaku.bili", "bilibili.com", "b23.tv", "bilibili.cn", "bilibili.tv", "bili22.cn", "bili23.cn", "bili33.cn", "bili2233.cn", "bilibili.smgbb.cn", "m.acg.tv");
-        // Audited package and URL rules imported from Fluid Cloud.
-        putHosts(candidates, "com.ylmf.androidclient", "115.com", "115cdn.com");
-        putHosts(candidates, "com.mfcloudcalculate.networkdisk", "123pan.com", "123pan.cn");
-        putHosts(candidates, "com.alibaba.wireless", "1688.com");
-        putHosts(candidates, "com.jingdong.app.mall", "jd.com", "3.cn");
-        putHosts(candidates, "com.quark.browser", "pan.quark.cn");
-        putHosts(candidates, "com.kurogame.kjq", "kurobbs.com");
-        putHosts(candidates, "com.smile.gifmaker", "kuaishou.com");
-        putHosts(candidates, "com.ss.android.ugc.aweme", "douyin.com");
-        putHosts(candidates, "com.xunmeng.pinduoduo", "yangkeduo.com", "y4n.cn", "srgnnmsrg.com", "pinduoduo.com");
-        putHosts(candidates, "com.taobao.taobao", "tb.cn");
-        putHosts(candidates, "com.baidu.netdisk", "pan.baidu.com");
-        putHosts(candidates, "com.baidu.tieba", "tieba.baidu.com");
-        putHosts(candidates, "com.mihoyo.hyperion", "miyoushe.com");
-        putHosts(candidates, "com.sankuai.meituan", "dpurl.cn");
-        putHosts(candidates, "com.coolapk.market", "coolapk.com");
-        putHosts(candidates, "com.alicloud.databox", "alipan.com");
-        // Fluid Cloud has valid alternatives for the same host. Keep them as ordered candidates
-        // instead of silently overwriting one application with another in a flat map.
-        putHosts(candidates, "com.example.piliplus", "bilibili.com", "b23.tv", "bilibili.cn", "bilibili.tv", "bili22.cn", "bili23.cn", "bili33.cn", "bili2233.cn", "bilibili.smgbb.cn", "m.acg.tv");
-        putHosts(candidates, "com.sankuai.meituan.takeoutnew", "dpurl.cn");
         HOST_TO_PACKAGES = immutableCandidates(candidates);
         for (Map.Entry<String, List<String>> entry : HOST_TO_PACKAGES.entrySet()) {
             if (!entry.getValue().isEmpty()) hosts.put(entry.getKey(), entry.getValue().get(0));

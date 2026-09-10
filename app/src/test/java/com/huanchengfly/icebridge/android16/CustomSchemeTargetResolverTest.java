@@ -16,13 +16,13 @@ public class CustomSchemeTargetResolverTest {
         assertEquals("com.xingin.xhs", CustomSchemeTargetResolver.findTargetPackageForScheme("xhsdiscover"));
     }
 
-    @Test public void resolvesCommonSchemesAndHttpsHosts() {
+    @Test public void resolvesCommonCustomSchemesWithoutBundledHttpsFallback() {
         assertEquals("com.instagram.android", CustomSchemeTargetResolver.findTargetPackageForScheme("instagram"));
         assertEquals("org.telegram.messenger", CustomSchemeTargetResolver.findTargetPackageForScheme("tg"));
         assertEquals("com.google.android.youtube", CustomSchemeTargetResolver.findTargetPackageForScheme("vnd.youtube"));
-        assertEquals("com.xingin.xhs", CustomSchemeTargetResolver.findTargetPackageForUri("https", "www.xiaohongshu.com"));
-        assertEquals("com.twitter.android", CustomSchemeTargetResolver.findTargetPackageForUri("https", "x.com"));
-        assertEquals("org.telegram.messenger", CustomSchemeTargetResolver.findTargetPackageForUri("https", "t.me"));
+        assertNull(CustomSchemeTargetResolver.findTargetPackageForUri("https", "www.xiaohongshu.com"));
+        assertNull(CustomSchemeTargetResolver.findTargetPackageForUri("https", "x.com"));
+        assertNull(CustomSchemeTargetResolver.findTargetPackageForUri("https", "t.me"));
     }
 
     @Test public void directSchemeResolutionNeverClaimsHttpsLinks() {
@@ -40,18 +40,17 @@ public class CustomSchemeTargetResolverTest {
                 CustomSchemeTargetResolver.findTargetPackageForScheme("alipay"));
     }
 
-    @Test public void resolvesSupportedMainlandAppLinks() {
-        assertEquals("com.sina.weibo", CustomSchemeTargetResolver.findTargetPackageForUri("https", "m.weibo.cn"));
-        assertEquals("com.zhihu.android", CustomSchemeTargetResolver.findTargetPackageForUri("https", "www.zhihu.com"));
-        assertEquals("com.eg.android.AlipayGphone", CustomSchemeTargetResolver.findTargetPackageForUri("https", "www.alipay.com"));
+    @Test public void httpsHasNoBundledFallback() {
+        assertNull(CustomSchemeTargetResolver.findTargetPackageForUri("https", "www.bilibili.com"));
+        assertEquals(Collections.emptyList(),
+                CustomSchemeTargetResolver.findTargetPackagesForUri(
+                        "https", "www.bilibili.com", Collections.<String, List<String>>emptyMap()));
     }
 
-    @Test public void resolvesSupportedInternationalAppLinks() {
-        assertEquals("com.google.android.youtube", CustomSchemeTargetResolver.findTargetPackageForUri("https", "youtu.be"));
-        assertEquals("com.instagram.android", CustomSchemeTargetResolver.findTargetPackageForUri("https", "www.instagram.com"));
-        assertEquals("org.telegram.messenger", CustomSchemeTargetResolver.findTargetPackageForUri("https", "telegram.me"));
+    @Test public void savedHttpsRuleIsUsed() {
+        assertEquals("com.twitter.android", CustomSchemeTargetResolver.findTargetPackageForUri(
+                "https", "x.com", Collections.singletonMap("x.com", "com.twitter.android")));
     }
-
 
     @Test public void savedRuleSnapshotOverridesBuiltInHostTarget() {
         assertEquals("com.example.reader", CustomSchemeTargetResolver.findTargetPackageForUri(
@@ -64,6 +63,15 @@ public class CustomSchemeTargetResolverTest {
         assertEquals("com.example.piliplus", CustomSchemeTargetResolver.findFirstTargetPackageForUri("https", "www.bilibili.com", candidates));
         assertEquals(Arrays.asList("com.example.piliplus", "tv.danmaku.bili"),
                 CustomSchemeTargetResolver.findTargetPackagesForUri("https", "www.bilibili.com", candidates));
+    }
+
+    @Test public void sharedBilibiliHostSelectsTheFrozenOfficialPackage() {
+        Map<String, List<String>> candidates = new LinkedHashMap<>();
+        candidates.put("bilibili.com", Arrays.asList("com.example.piliplus", "tv.danmaku.bili"));
+        assertEquals("tv.danmaku.bili", NativeBridgePolicy.selectCandidate(
+                CustomSchemeTargetResolver.findTargetPackagesForUri(
+                        "https", "www.bilibili.com", candidates),
+                Collections.singleton("tv.danmaku.bili")));
     }
 
     @Test public void ignoresUnknownAndNonAppHosts() {

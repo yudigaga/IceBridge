@@ -43,7 +43,7 @@ public final class PaymentSdkBridgeResolver {
         return null;
     }
 
-    static boolean isReplayableSdkActivity(String componentPackage, String className) {
+    public static boolean isReplayableSdkActivity(String componentPackage, String className) {
         return ALIPAY_PACKAGE.equals(componentPackage) && isSdkActivity(className);
     }
 

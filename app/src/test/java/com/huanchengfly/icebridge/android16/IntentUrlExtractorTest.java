@@ -33,4 +33,16 @@ public class IntentUrlExtractorTest {
         assertNull(IntentUrlExtractor.extractUrl("not a URL"));
         assertNull(IntentUrlExtractor.extractUrl("content://example/item"));
     }
+
+    // Nested Bundle traversal is exercised by instrumentation tests. The Android local JVM
+    // test runtime exposes Bundle as a final framework class whose storage methods are not
+    // implemented, so constructing a synthetic nested Bundle here would not test production
+    // behavior and would fail before the extractor runs.
+
+    @Test
+    public void boundsOversizedString() {
+        StringBuilder value = new StringBuilder("https://x.com/");
+        while (value.length() <= 8192) value.append('a');
+        assertNull(IntentUrlExtractor.extractUrl(value.toString()));
+    }
 }

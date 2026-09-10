@@ -24,11 +24,30 @@ import com.huanchengfly.icebridge.automation.LinkAutomationDiagnostics;
 public final class ClipboardLinkService extends Service {
     private static final String CHANNEL = "icebridge_link_monitor";
     private static final int NOTIFICATION_ID = 8101;
+    // Android 16+ has the system_server clipboard observer in IceBridgeModule.
+    // Keep the app-side service as a compatibility fallback on older releases only.
+    private static final int SYSTEM_SERVER_CLIPBOARD_OWNER_API = 35;
+    private static final long APP_CLIPBOARD_DEDUPLICATION_MILLIS = 1_500L;
     private ClipboardManager clipboard;
     private ClipboardManager.OnPrimaryClipChangedListener listener;
+    private String lastHandledClipboardUrl;
+    private long lastHandledClipboardAt;
 
     public static void update(Context context) {
         Intent intent = new Intent(context, ClipboardLinkService.class);
+        if (isSystemServerClipboardOwner()) {
+            // Do not create a second listener in the app process. The system_server hook owns
+            // clipboard observation on Android 16+, including dispatch and target selection.
+            try {
+                context.stopService(intent);
+                LinkAutomationDiagnostics.record(context, "clipboard_service_skipped", null,
+                        "system_server_owner api=" + Build.VERSION.SDK_INT);
+            } catch (Throwable error) {
+                LinkAutomationDiagnostics.record(context, "fail", null,
+                        "CLIPBOARD_SERVICE_STOP=" + error.getClass().getSimpleName());
+            }
+            return;
+        }
         if (LinkAutomationConfig.isClipboardEnabled(context)) {
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent);
@@ -42,6 +61,13 @@ public final class ClipboardLinkService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         LinkAutomationDiagnostics.record(this, "clipboard_service_start_requested", null, "onCreate");
+        if (isSystemServerClipboardOwner()) {
+            // Covers a service instance started before preferences/process state changed.
+            LinkAutomationDiagnostics.record(this, "clipboard_listener_skipped", null,
+                    "system_server_owner api=" + Build.VERSION.SDK_INT);
+            stopSelf();
+            return;
+        }
         createChannel();
         startForeground(NOTIFICATION_ID, notification());
         clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -65,6 +91,11 @@ public final class ClipboardLinkService extends Service {
                 LinkAutomationDiagnostics.record(this, "clipboard_ignored_invalid", raw, "NO_HTTP_URL");
                 return;
             }
+            if (!claimClipboardUrl(url)) {
+                LinkAutomationDiagnostics.record(this, "clipboard_coalesced", url,
+                        "service_duplicate_window");
+                return;
+            }
             LinkAutomationDiagnostics.record(this, "clipboard_url_detected", url, "service");
             LinkAutomationController.handle(this, url, "clipboard", true, null);
         } catch (Throwable error) {
@@ -86,8 +117,23 @@ public final class ClipboardLinkService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (!LinkAutomationConfig.isClipboardEnabled(this)) stopSelf();
-        return START_STICKY;
+        if (isSystemServerClipboardOwner() || !LinkAutomationConfig.isClipboardEnabled(this)) stopSelf();
+        return START_NOT_STICKY;
+    }
+
+    private synchronized boolean claimClipboardUrl(String url) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (url.equals(lastHandledClipboardUrl)
+                && now - lastHandledClipboardAt < APP_CLIPBOARD_DEDUPLICATION_MILLIS) {
+            return false;
+        }
+        lastHandledClipboardUrl = url;
+        lastHandledClipboardAt = now;
+        return true;
+    }
+
+    private static boolean isSystemServerClipboardOwner() {
+        return Build.VERSION.SDK_INT >= SYSTEM_SERVER_CLIPBOARD_OWNER_API;
     }
 
     @Override public void onDestroy() {

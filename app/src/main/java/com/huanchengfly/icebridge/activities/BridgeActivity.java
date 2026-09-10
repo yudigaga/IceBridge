@@ -28,6 +28,7 @@ import com.huanchengfly.icebridge.dividers.SpacesItemDecoration;
 import com.huanchengfly.icebridge.automation.LinkAutomationConfig;
 import com.huanchengfly.icebridge.automation.LinkAutomationDiagnostics;
 import com.huanchengfly.icebridge.automation.FluidCloudRuleCatalog;
+import com.huanchengfly.icebridge.android16.PaymentSdkBridgeResolver;
 import com.huanchengfly.icebridge.engines.BaseEngine;
 import com.huanchengfly.icebridge.engines.EngineManager;
 import com.huanchengfly.icebridge.utils.BridgeUtil;
@@ -36,6 +37,7 @@ import com.huanchengfly.icebridge.utils.RecentTaskVisibility;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class BridgeActivity extends BaseActivity {
     public static final String TAG = "Bridge";
@@ -50,6 +52,11 @@ public class BridgeActivity extends BaseActivity {
     private static final String EXTRA_NATIVE_BRIDGE_SOURCE = "native_bridge_source";
 
     private BaseEngine mEngine;
+
+    // A native bridge can receive duplicate lifecycle/callback notifications while thawing.
+    // Keep the activity one-shot so only one terminal action (launch or fallback) is dispatched.
+    private final AtomicBoolean nativeBridgeStarted = new AtomicBoolean(false);
+    private final AtomicBoolean nativeBridgeTerminal = new AtomicBoolean(false);
 
     private void start() {
         mEngine = EngineManager.getEngine(this);
@@ -91,6 +98,12 @@ public class BridgeActivity extends BaseActivity {
      * suppress the foreground transition under BAL, whereas this trampoline is foreground.
      */
     private void nativeAutoBridge() {
+        if (!nativeBridgeStarted.compareAndSet(false, true)) {
+            LinkAutomationDiagnostics.record(this, "native_bridge_duplicate", null,
+                    "lifecycle_or_callback");
+            finishBridgeTask();
+            return;
+        }
         String target = getIntent().getStringExtra(EXTRA_TARGET_PACKAGE);
         String rawUrl = getIntent().getStringExtra(EXTRA_NATIVE_LINK_URL);
         Intent sourceIntent = getIntent().getParcelableExtra(EXTRA_ORIGINAL_INTENT);
@@ -101,6 +114,22 @@ public class BridgeActivity extends BaseActivity {
         if (target == null || rawUrl == null || sourceIntent == null) {
             LinkAutomationDiagnostics.record(this, "native_bridge_fail", rawUrl, "INVALID_PAYLOAD");
             finishBridgeTask();
+            return;
+        }
+        if (!isValidNativeBridgePayload(target, rawUrl, sourceIntent, directIntent,
+                prewarmOnly, bridgeSource)) {
+            LinkAutomationDiagnostics.record(this, "native_boundary_rejected", rawUrl,
+                    "target=" + target + " source="
+                            + (bridgeSource == null ? "unknown" : bridgeSource)
+                            + " prewarm=" + prewarmOnly);
+            // Never let an untrusted caller turn the payment-only replay path into a generic
+            // Intent trampoline. Ordinary native requests may still return to their source using
+            // the sanitized fallback; malformed payment requests are terminated.
+            if (!prewarmOnly && isSafeNativeFallbackSource(sourceIntent, bridgeSource)) {
+                replaySourceIntent(sourceIntent);
+            } else {
+                finishBridgeTask();
+            }
             return;
         }
         LinkAutomationDiagnostics.record(this, "native_bridge", rawUrl, "target=" + target
@@ -138,7 +167,9 @@ public class BridgeActivity extends BaseActivity {
             @Override public void onFailure() {
                 LinkAutomationDiagnostics.record(BridgeActivity.this, "native_bridge_fail", rawUrl,
                         "THAW_FAILED target=" + target);
-                replayPaymentSdkIntent(sourceIntent);
+                LinkAutomationDiagnostics.record(BridgeActivity.this,
+                        "native_thaw_fail_fallback", rawUrl, "target=" + target);
+                replaySourceIntent(sourceIntent);
             }
         });
         if (mEngine.checkPermission() == PackageManager.PERMISSION_GRANTED) {
@@ -149,12 +180,119 @@ public class BridgeActivity extends BaseActivity {
                 @Override public void onFailure() {
                     LinkAutomationDiagnostics.record(BridgeActivity.this, "native_bridge_fail", rawUrl,
                             "PERMISSION_DENIED target=" + target);
-                    replayPaymentSdkIntent(sourceIntent);
+                    LinkAutomationDiagnostics.record(BridgeActivity.this,
+                            "native_permission_denied_fallback", rawUrl, "target=" + target);
+                    replaySourceIntent(sourceIntent);
                 }
             });
         }
     }
 
+
+    /**
+     * Validates the payload before any package-state mutation or Intent dispatch. BridgeActivity is
+     * exported for normal deep-link handling, so extras must not be treated as an authentication
+     * mechanism. In particular, the payment replay flag is accepted only for an Alipay-owned SDK
+     * Activity produced by the payment resolver; ordinary native callers can never enter it.
+     */
+    private boolean isValidNativeBridgePayload(String target, String rawUrl, Intent sourceIntent,
+                                               boolean directIntent, boolean prewarmOnly,
+                                               String bridgeSource) {
+        if (!isValidPackageName(target) || getPackageName().equals(target)
+                || !isKnownPackage(target) || sourceIntent == null
+                || bridgeSource == null || bridgeSource.trim().isEmpty()) {
+            return false;
+        }
+        if (prewarmOnly) {
+            return canReplayPaymentSdkIntent(target, bridgeSource, sourceIntent);
+        }
+        if (!isSupportedNativeSource(bridgeSource)) {
+            return false;
+        }
+        Uri uri;
+        try {
+            uri = Uri.parse(rawUrl);
+        } catch (Throwable ignored) {
+            return false;
+        }
+        String scheme = uri == null ? null : uri.getScheme();
+        if (scheme == null) return false;
+        if (directIntent) {
+            // Direct/native handoffs are for app schemes. HTTP(S) must come through the known
+            // WebView capture path, otherwise a forged payload could recurse through the bridge.
+            return !"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)
+                    && "custom_scheme".equals(bridgeSource);
+        }
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+            return false;
+        }
+        if (uri.getHost() == null || uri.getHost().trim().isEmpty()) return false;
+        if ("clipboard".equals(bridgeSource)) {
+            return sourceIntent.getComponent() == null && sourceIntent.getPackage() == null;
+        }
+        if ("wechat_webview".equals(bridgeSource)) {
+            return hasSourceComponent(sourceIntent, "com.tencent.mm",
+                    "com.tencent.mm.plugin.webview.ui.tools.MMWebViewUI");
+        }
+        if ("qq_browser".equals(bridgeSource)) {
+            return hasSourceComponent(sourceIntent, "com.tencent.mobileqq",
+                    "com.tencent.mobileqq.activity.QQBrowserActivity");
+        }
+        return "custom_scheme".equals(bridgeSource);
+    }
+
+    private boolean canReplayPaymentSdkIntent(String target, String bridgeSource,
+                                               Intent sourceIntent) {
+        if (!PaymentSdkBridgeResolver.ALIPAY_PACKAGE.equals(target)
+                || !"alipay_h5_sdk".equals(bridgeSource)
+                || sourceIntent == null || sourceIntent.getComponent() == null) {
+            return false;
+        }
+        ComponentName component = sourceIntent.getComponent();
+        return PaymentSdkBridgeResolver.isReplayableSdkActivity(
+                component.getPackageName(), component.getClassName());
+    }
+
+    private boolean isSafeNativeFallbackSource(Intent sourceIntent, String bridgeSource) {
+        if (sourceIntent == null || bridgeSource == null) return false;
+        if ("clipboard".equals(bridgeSource)) {
+            return sourceIntent.getComponent() == null && sourceIntent.getPackage() == null;
+        }
+        return "wechat_webview".equals(bridgeSource)
+                || "qq_browser".equals(bridgeSource)
+                || "custom_scheme".equals(bridgeSource);
+    }
+
+    private boolean isSupportedNativeSource(String bridgeSource) {
+        return "clipboard".equals(bridgeSource)
+                || "wechat_webview".equals(bridgeSource)
+                || "qq_browser".equals(bridgeSource)
+                || "custom_scheme".equals(bridgeSource)
+                || "alipay_direct".equals(bridgeSource);
+    }
+
+    private boolean hasSourceComponent(Intent intent, String packageName, String className) {
+        ComponentName component = intent == null ? null : intent.getComponent();
+        return component != null && packageName.equals(component.getPackageName())
+                && className.equals(component.getClassName());
+    }
+
+    private boolean isKnownPackage(String packageName) {
+        try {
+            int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                    ? PackageManager.MATCH_UNINSTALLED_PACKAGES
+                    : PackageManager.GET_UNINSTALLED_PACKAGES;
+            ApplicationInfo info = getPackageManager().getApplicationInfo(packageName, flags);
+            return info != null && (info.flags & ApplicationInfo.FLAG_INSTALLED) != 0;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private boolean isValidPackageName(String packageName) {
+        return packageName != null
+                && packageName.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+");
+    }
 
     private void updateNativeBridgeIcons(Intent sourceIntent, String targetPackage) {
         ImageView sourceIcon = findViewById(R.id.bridge_source_icon);
@@ -176,7 +314,7 @@ public class BridgeActivity extends BaseActivity {
                         ? PackageManager.MATCH_DISABLED_COMPONENTS | PackageManager.MATCH_UNINSTALLED_PACKAGES
                         : PackageManager.GET_DISABLED_COMPONENTS | PackageManager.GET_UNINSTALLED_PACKAGES;
                 ApplicationInfo info = getPackageManager().getApplicationInfo(packageName, flags);
-                if (info != null) {
+                if (info != null && (info.flags & ApplicationInfo.FLAG_INSTALLED) != 0) {
                     return info.loadIcon(getPackageManager());
                 }
             }
@@ -191,7 +329,9 @@ public class BridgeActivity extends BaseActivity {
                     ? PackageManager.MATCH_UNINSTALLED_PACKAGES | PackageManager.MATCH_DISABLED_COMPONENTS
                     : PackageManager.GET_UNINSTALLED_PACKAGES | PackageManager.GET_DISABLED_COMPONENTS;
             ApplicationInfo info = getPackageManager().getApplicationInfo(target, flags);
-            return info != null && mEngine.isAppEnabled(info);
+            return info != null
+                    && (info.flags & ApplicationInfo.FLAG_INSTALLED) != 0
+                    && mEngine.isAppEnabled(info);
         } catch (Throwable ignored) {
             // Hidden IceBox packages are deliberately treated as frozen and are restored below.
             return false;
@@ -249,6 +389,10 @@ public class BridgeActivity extends BaseActivity {
                 LinkAutomationDiagnostics.record(this, "native_resolve_ok", rawUrl,
                         "target=" + target + " component=" + component);
             }
+            if (!claimNativeBridgeTerminalAction()) {
+                finishBridgeTask();
+                return;
+            }
             startActivity(launch);
             LinkAutomationDiagnostics.record(this, "native_open_ok", rawUrl,
                     "target=" + target + " direct=" + directIntent);
@@ -264,11 +408,19 @@ public class BridgeActivity extends BaseActivity {
                     reason + " target=" + target);
             // If the app itself rejects this URI, preserve the original WebView experience instead
             // of stranding the user on an empty bridge screen.
-            replaySourceIntent(sourceIntent);
+            replaySourceIntentOwned(sourceIntent);
         }
     }
 
     private void replaySourceIntent(Intent sourceIntent) {
+        if (!claimNativeBridgeTerminalAction()) {
+            finishBridgeTask();
+            return;
+        }
+        replaySourceIntentOwned(sourceIntent);
+    }
+
+    private void replaySourceIntentOwned(Intent sourceIntent) {
         try {
             // The source is delivered by system_server as a nested Parcelable Intent. Do not
             // replay a direct copy on Android 16: the platform correctly treats an untrusted
@@ -293,6 +445,10 @@ public class BridgeActivity extends BaseActivity {
      */
     private void replayPaymentSdkIntent(Intent sourceIntent) {
         if (sourceIntent == null) {
+            finishBridgeTask();
+            return;
+        }
+        if (!claimNativeBridgeTerminalAction()) {
             finishBridgeTask();
             return;
         }
@@ -321,6 +477,11 @@ public class BridgeActivity extends BaseActivity {
             // Alipay itself starts successfully. BridgeActivity is already foreground here.
             replay.setFlags(sourceIntent.getFlags() & ~(Intent.FLAG_ACTIVITY_NEW_TASK
                     | Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK));
+            // ActivityStarter may have started the bridge for the carrier/merchant H5 SDK's
+            // result. Forward that result instead of making IceBridge the terminal caller.
+            // This is required for payment SDKs that validate or deliver the payment response via
+            // the original activity result chain.
+            replay.addFlags(Intent.FLAG_ACTIVITY_FORWARD_RESULT);
             LinkAutomationDiagnostics.record(this, "payment_sdk_replay_start", null,
                     "component=" + (replay.getComponent() == null ? "none"
                             : replay.getComponent().flattenToShortString())
@@ -329,18 +490,22 @@ public class BridgeActivity extends BaseActivity {
                                     : String.valueOf(replay.getData().getScheme()))
                             + " sourceFlags=0x" + Integer.toHexString(sourceIntent.getFlags())
                             + " replayFlags=0x" + Integer.toHexString(replay.getFlags())
+                            + " forwardResult=true"
                             + " extras=" + (extras == null ? 0 : extras.keySet().size()));
             startActivity(replay);
             LinkAutomationDiagnostics.record(this, "payment_sdk_replay_dispatched", null,
                     "component=" + (replay.getComponent() == null ? "none"
                             : replay.getComponent().flattenToShortString()));
-            finishBridgeTask();
+            // Payment bridges stay in the merchant task. Removing that task after dispatch can
+            // immediately tear down the wallet handoff; a regular finish preserves the caller.
+            finish();
         } catch (Throwable error) {
             LinkAutomationDiagnostics.record(this, "payment_sdk_replay_fail", null,
                     error.getClass().getSimpleName());
             // Keep the original web/payment Activity usable if a vendor rejects the complete
-            // bundle.  The sanitized fallback still preserves its explicit component.
-            replaySourceIntent(sourceIntent);
+            // bundle. The native terminal claim is retained, so a duplicate callback cannot
+            // dispatch a second replay while this fallback is being attempted.
+            replaySourceIntentOwned(sourceIntent);
         }
     }
 
@@ -400,6 +565,10 @@ public class BridgeActivity extends BaseActivity {
         } catch (Throwable ignored) {
             // A malformed parcelable extra must not prevent the safe portion of the fallback.
         }
+    }
+
+    private boolean claimNativeBridgeTerminalAction() {
+        return nativeBridgeTerminal.compareAndSet(false, true);
     }
 
     private void finishBridgeTask() {

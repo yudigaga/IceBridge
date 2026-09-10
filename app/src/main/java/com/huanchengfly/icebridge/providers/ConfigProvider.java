@@ -27,6 +27,7 @@ import org.litepal.LitePal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -45,7 +46,7 @@ public class ConfigProvider extends ContentProvider {
     private static final String[] LINK_TARGET_CANDIDATES = {
             "com.xingin.xhs", "com.sina.weibo", "com.zhihu.android", "com.twitter.android",
             "com.google.android.youtube", "com.instagram.android", "org.telegram.messenger",
-            "com.eg.android.AlipayGphone"
+            "com.eg.android.AlipayGphone", "tv.danmaku.bili"
     };
 
     static {
@@ -72,8 +73,8 @@ public class ConfigProvider extends ContentProvider {
             Log.i(TAG, "query");
             try {
                 return LitePal.findBySQL("select * from AppConfig");
-            } catch (Exception e) {
-                e.printStackTrace();
+            } catch (Exception error) {
+                Log.w(TAG, "query failed: " + error.getClass().getSimpleName(), error);
             }
         }
         return null;
@@ -89,31 +90,32 @@ public class ConfigProvider extends ContentProvider {
         Bundle snapshot = new Bundle();
         snapshot.putInt(SystemServerConfigContract.KEY_SCHEMA_VERSION, SystemServerConfigContract.SCHEMA_VERSION);
         try {
-            AppConfig config = LitePal.where("key = ?", SystemServerConfigContract.KEY_XHS_RECOVERY)
-                    .findFirst(AppConfig.class);
+            // Read one database snapshot instead of issuing one query per switch. This reduces
+            // startup Binder latency and prevents a config refresh from observing mixed values
+            // while the UI is saving several related settings.
+            Map<String, String> configValues = new HashMap<>();
+            for (AppConfig config : LitePal.findAll(AppConfig.class)) {
+                if (config != null && config.getKey() != null) {
+                    configValues.put(config.getKey(), config.getValue());
+                }
+            }
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_XHS_RECOVERY,
-                    config != null && "1".equals(config.getValue())
+                    configEnabled(configValues, SystemServerConfigContract.KEY_XHS_RECOVERY, false)
             );
-            AppConfig autoOpenConfig = LitePal.where("key = ?", SystemServerConfigContract.KEY_AUTO_OPEN_LINKS)
-                    .findFirst(AppConfig.class);
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_AUTO_OPEN_LINKS,
-                    autoOpenConfig != null && "1".equals(autoOpenConfig.getValue())
+                    configEnabled(configValues, SystemServerConfigContract.KEY_AUTO_OPEN_LINKS, false)
             );
-            AppConfig nativeCaptureConfig = LitePal.where("key = ?",
-                    SystemServerConfigContract.KEY_NATIVE_LINK_CAPTURE).findFirst(AppConfig.class);
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_NATIVE_LINK_CAPTURE,
-                    nativeCaptureConfig != null && "1".equals(nativeCaptureConfig.getValue())
+                    configEnabled(configValues, SystemServerConfigContract.KEY_NATIVE_LINK_CAPTURE, false)
             );
-            AppConfig paymentSdkBridgeConfig = LitePal.where("key = ?",
-                    SystemServerConfigContract.KEY_PAYMENT_SDK_BRIDGE).findFirst(AppConfig.class);
             // Default-on: this bridge is restricted to known payment SDK Activities and only
             // restores the wallet before replaying the SDK's original request.
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_PAYMENT_SDK_BRIDGE,
-                    paymentSdkBridgeConfig == null || "1".equals(paymentSdkBridgeConfig.getValue())
+                    configEnabled(configValues, SystemServerConfigContract.KEY_PAYMENT_SDK_BRIDGE, true)
             );
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_CLIPBOARD_AUTO_OPEN,
@@ -128,8 +130,10 @@ public class ConfigProvider extends ContentProvider {
             snapshot.putStringArray(SystemServerConfigContract.KEY_ONLINE_HOST_RULES, RuleConfigRepository.systemServerEntries(getContext()));
             snapshot.putString(SystemServerConfigContract.KEY_SNAPSHOT_STATUS, SystemServerConfigContract.STATUS_OK);
         } catch (Throwable error) {
-            Log.w(TAG, "system-server snapshot unavailable: " + error.getClass().getSimpleName());
+            String reason = error.getClass().getSimpleName();
+            Log.w(TAG, "system-server snapshot unavailable: " + reason, error);
             snapshot.putString(SystemServerConfigContract.KEY_SNAPSHOT_STATUS, SystemServerConfigContract.STATUS_UNAVAILABLE);
+            snapshot.putString(SystemServerConfigContract.KEY_SNAPSHOT_ERROR, reason);
         }
         return snapshot;
     }
@@ -175,8 +179,21 @@ public class ConfigProvider extends ContentProvider {
         return new ArrayList<>(frozen);
     }
 
+    private static boolean configEnabled(Map<String, String> values, String key, boolean defaultValue) {
+        String value = values == null ? null : values.get(key);
+        return value == null ? defaultValue : "1".equals(value);
+    }
+
     private void addIfFrozen(Set<String> frozen, ApplicationInfo info) {
-        if (info != null && info.packageName != null && IceBox.getAppEnabledSetting(info) != 0) {
+        if (info == null || info.packageName == null) return;
+        // The query deliberately includes MATCH_UNINSTALLED_PACKAGES for compatibility with
+        // frozen/disabled apps, but that flag also exposes stale package records. Do not publish
+        // an uninstalled package as frozen: it can then win a shared-host candidate selection.
+        if ((info.flags & ApplicationInfo.FLAG_INSTALLED) == 0) {
+            Log.i(TAG, "frozen snapshot skipped uninstalled package=" + info.packageName);
+            return;
+        }
+        if (IceBox.getAppEnabledSetting(info) != 0) {
             frozen.add(info.packageName);
         }
     }

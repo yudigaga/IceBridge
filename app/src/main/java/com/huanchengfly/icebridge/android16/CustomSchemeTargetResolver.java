@@ -3,8 +3,6 @@ package com.huanchengfly.icebridge.android16;
 import android.content.Intent;
 import android.net.Uri;
 
-import com.huanchengfly.icebridge.automation.FluidCloudRuleCatalog;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -32,14 +30,12 @@ public final class CustomSchemeTargetResolver {
         schemes.put("x", "com.twitter.android");
         SCHEME_TO_PACKAGE = Collections.unmodifiableMap(schemes);
 
-        BUILT_IN_HOST_TO_PACKAGE = FluidCloudRuleCatalog.builtInHostMappings();
+        // HTTP(S) routing is intentionally data-driven: online cache and manual rules only.
+        // Custom URI schemes above remain stable compatibility mappings.
+        BUILT_IN_HOST_TO_PACKAGE = Collections.emptyMap();
     }
 
     private CustomSchemeTargetResolver() {
-    }
-
-    private static void putHosts(Map<String, String> mappings, String packageName, String... hosts) {
-        for (String host : hosts) mappings.put(host, packageName);
     }
 
     public static String findTargetPackageForScheme(String scheme) {
@@ -98,8 +94,8 @@ public final class CustomSchemeTargetResolver {
     }
 
     /**
-     * Resolves an HTTPS host using the saved rule snapshot first, then built-in rules. The saved
-     * snapshot is already reduced to manual > online > default by RuleConfigRepository.
+     * Resolves an HTTP(S) host only from the supplied runtime rule snapshot. There is deliberately
+     * no bundled host fallback: an absent rule means the link is left untouched.
      */
     public static String findTargetPackageForUri(String scheme, String host, Map<String, String> savedMappings) {
         if (scheme == null) return null;
@@ -108,8 +104,7 @@ public final class CustomSchemeTargetResolver {
         if (!"http".equals(normalizedScheme) && !"https".equals(normalizedScheme)) {
             return findTargetPackageForScheme(normalizedScheme);
         }
-        String saved = findHostMapping(normalizedHost, savedMappings);
-        return saved != null ? saved : findHostMapping(normalizedHost, BUILT_IN_HOST_TO_PACKAGE);
+        return findHostMapping(normalizedHost, savedMappings);
     }
 
     private static String findHostMapping(String host, Map<String, String> mappings) {
@@ -132,9 +127,7 @@ public final class CustomSchemeTargetResolver {
             return target == null ? Collections.emptyList() : Collections.singletonList(target);
         }
         String normalizedHost = host == null ? "" : host.toLowerCase(Locale.ROOT);
-        List<String> saved = findHostCandidates(normalizedHost, savedCandidates);
-        if (!saved.isEmpty()) return saved;
-        return findHostCandidates(normalizedHost, FluidCloudRuleCatalog.builtInHostCandidates());
+        return findHostCandidates(normalizedHost, savedCandidates);
     }
 
     /** Compatibility helper for system paths that need one deterministic candidate. */
@@ -154,18 +147,9 @@ public final class CustomSchemeTargetResolver {
         return Collections.emptyList();
     }
 
-    /** Human-readable rule list for legacy settings and diagnostics. */
+    /** Human-readable routing policy for legacy settings and diagnostics. */
     public static String builtInRulesDescription() {
-        return "HTTPS \u57df\u540d\uff1a\n"
-                + "\u2022 \u5c0f\u7ea2\u4e66\uff1axiaohongshu.com\u3001xhslink.com\n"
-                + "\u2022 \u5fae\u535a\uff1aweibo.com\u3001weibo.cn\u3001sinaweibo.cn\n"
-                + "\u2022 \u77e5\u4e4e\uff1azhihu.com\u3001zhimg.com\n"
-                + "\u2022 \u652f\u4ed8\u5b9d\uff1aalipay.com\u3001alipay.cn\n"
-                + "\u2022 X\uff1ax.com\u3001twitter.com\n"
-                + "\u2022 YouTube\uff1ayoutube.com\u3001youtu.be\n"
-                + "\u2022 Instagram\uff1ainstagram.com\n"
-                + "\u2022 Telegram\uff1at.me\u3001telegram.me\n"
-                + "\u2022 \u54d4\u54e9\u54d4\u54e9\uff1abilibili.com\u3001b23.tv\n\n"
+        return "HTTP(S) \u57df\u540d\uff1a\u4ec5\u4f7f\u7528\u5728\u7ebf\u89c4\u5219\u6216\u624b\u52a8\u6dfb\u52a0\u89c4\u5219\u3002\n\n"
                 + "\u81ea\u5b9a\u4e49 Scheme\uff1a\n"
                 + "\u2022 \u5c0f\u7ea2\u4e66\uff1axhsdiscover\n"
                 + "\u2022 \u652f\u4ed8\u5b9d\uff1aalipays\u3001alipay\n"

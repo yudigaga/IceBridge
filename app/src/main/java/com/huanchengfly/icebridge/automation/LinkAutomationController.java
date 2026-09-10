@@ -70,6 +70,12 @@ public final class LinkAutomationController {
             restoreHiddenTarget(app, uri, target, background, source, engine, completion);
             return;
         }
+        if (!isInstalled(info)) {
+            LinkAutomationDiagnostics.record(app, "skip", uri.toString(),
+                    "TARGET_NOT_INSTALLED target=" + target + " source=" + source);
+            fallback(app, uri, source, completion);
+            return;
+        }
         boolean frozen = !engine.isAppEnabled(info);
         // onlyFrozenLinkTargets controls whether thaw is needed; it must never suppress
         // launching an already-enabled target. A user may tap the same URL repeatedly.
@@ -263,9 +269,14 @@ public final class LinkAutomationController {
         // retaining the rule order selected in the configuration snapshot.
         for (String candidate : CustomSchemeTargetResolver.findTargetPackagesForUri(uri.getScheme(), uri.getHost(),
                 RuleConfigRepository.effectiveHostCandidates(context, sourcePackage))) {
-            if (getApplicationInfo(context, candidate) != null) return candidate;
+            ApplicationInfo info = getApplicationInfo(context, candidate);
+            if (isInstalled(info)) return candidate;
         }
         return null;
+    }
+
+    private static boolean isInstalled(ApplicationInfo info) {
+        return info != null && (info.flags & ApplicationInfo.FLAG_INSTALLED) != 0;
     }
 
     private static ApplicationInfo getApplicationInfo(Context context, String packageName) {

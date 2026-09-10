@@ -288,7 +288,8 @@
             android:name=".providers.ConfigProvider"
             android:authorities="com.huanchengfly.icebridge.providers.ConfigProvider"
             android:exported="true"
-                android:writePermission="android.permission.INTERACT_ACROSS_USERS_FULL"
+            android:readPermission="android.permission.INTERACT_ACROSS_USERS_FULL"
+            android:writePermission="android.permission.INTERACT_ACROSS_USERS_FULL"
             tools:ignore="ExportedContentProvider" />
     </application>
 

@@ -2,8 +2,11 @@ package com.huanchengfly.icebridge.automation;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.net.Uri;
+import android.content.pm.PackageManager;
+
+import android.os.Build;
 import android.text.TextUtils;
+import android.util.Log;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -27,6 +30,7 @@ import java.util.regex.Pattern;
  * rule origins and the reviewed URL conversion flag are never lost because a host is shared.
  */
 public final class RuleConfigRepository {
+    private static final String TAG = "RuleConfigRepository";
     private static final String PREFS = LinkAutomationConfig.PREFS;
     private static final String KEY_MANUAL = "rule_config_manual_v1";
     private static final String KEY_EFFECTIVE = "rule_config_effective_v1";
@@ -41,21 +45,18 @@ public final class RuleConfigRepository {
 
     private RuleConfigRepository() { }
 
-    /** The last explicitly saved rules, including source and fixed conversion metadata. */
+    /**
+     * Builds the runtime rule set exclusively from persisted manual rules and the current online
+     * cache. Older effective snapshots are deliberately not an input: prior releases included
+     * bundled host routing data in those snapshots, which could keep an uninstalled package as a
+     * candidate after an upgrade.
+     */
     public static List<LinkRuleEntry> effectiveRuleEntries(Context context) {
         Context app = app(context);
         if (app == null) return Collections.emptyList();
-        String v3 = prefs(app).getString(KEY_EFFECTIVE_RULES, "");
-        List<LinkRuleEntry> stored = parseRuleEntries(v3);
-        if (!stored.isEmpty()) return stored;
-
-        // Preserve a prior explicit save during upgrade. Metadata is reconstructed conservatively;
-        // the next press of Save stores the fully auditable v3 snapshot.
-        Map<String, List<String>> v2 = parseCandidateMap(prefs(app).getString(KEY_EFFECTIVE_CANDIDATES, ""));
-        if (v2.isEmpty()) v2 = candidatesFromFlat(parseHostMap(prefs(app).getString(KEY_EFFECTIVE, "")));
-        if (!v2.isEmpty()) return annotateLegacyCandidates(app, v2);
-        return buildEffectiveRuleEntries(manualRulesByPackage(app), onlineRuleEntries(app),
-                FluidCloudRuleCatalog.builtInRuleEntries());
+        List<LinkRuleEntry> effective = buildCurrentEffectiveRuleEntries(app);
+        persistRuntimeSnapshot(app, effective);
+        return effective;
     }
 
     /** Ordered candidates for routing. The first candidate wins only when it is installed/usable. */
@@ -90,10 +91,16 @@ public final class RuleConfigRepository {
         return Collections.unmodifiableMap(result);
     }
 
-    /** Compact snapshot passed to system_server; provenance remains in the app-side v3 snapshot. */
+    /**
+     * Compact snapshot passed to system_server. Targets are filtered in the app process so a
+     * configured but absent package can never become a system_server routing candidate. Disabled
+     * and IceBox-frozen packages remain eligible because their ApplicationInfo is still queryable.
+     */
     public static String[] systemServerEntries(Context context) {
+        Map<String, List<String>> configured = effectiveHostCandidates(context);
+        Map<String, List<String>> installed = filterInstalledCandidates(context, configured);
         List<String> entries = new ArrayList<>();
-        for (Map.Entry<String, List<String>> entry : effectiveHostCandidates(context).entrySet()) {
+        for (Map.Entry<String, List<String>> entry : installed.entrySet()) {
             if (!entry.getValue().isEmpty()) entries.add(entry.getKey() + "=" + TextUtils.join(",", entry.getValue()));
         }
         return entries.toArray(new String[0]);
@@ -105,7 +112,7 @@ public final class RuleConfigRepository {
         if (app == null) return Collections.emptyMap();
         Map<String, List<String>> result = parseManualRules(prefs(app).getString(KEY_MANUAL, ""));
         for (Map.Entry<String, String> entry : LinkAutomationConfig.customMappings(app).entrySet()) {
-            if (!validPackage(entry.getValue())) continue;
+            if (!isValidRulePackage(entry.getValue())) continue;
             List<String> hosts = result.get(entry.getValue());
             if (hosts == null) { hosts = new ArrayList<>(); result.put(entry.getValue(), hosts); }
             String host = normalizeHostOrUrl(entry.getKey());
@@ -118,8 +125,9 @@ public final class RuleConfigRepository {
         return groupByCandidatePackage(OnlineLinkRuleRepository.hostCandidates(context));
     }
 
+    /** Kept for binary/source compatibility; bundled host routing is no longer used. */
     public static Map<String, List<String>> builtInRulesByPackage() {
-        return groupByEntries(FluidCloudRuleCatalog.builtInRuleEntries());
+        return Collections.emptyMap();
     }
 
     public static Map<String, List<String>> effectiveRulesByPackage(Context context) {
@@ -133,6 +141,40 @@ public final class RuleConfigRepository {
         return parseRuleEntries(prefs(app).getString(KEY_SOURCE_RULES, ""));
     }
 
+    /** Returns all durable manual rules in the transfer model, including legacy manual mappings. */
+    public static List<LinkRuleEntry> manualRuleEntriesForTransfer(Context context) {
+        Context app = app(context);
+        if (app == null) return Collections.emptyList();
+        return manualRuleEntries(manualRulesByPackage(app), sourceRuleEntries(app));
+    }
+
+    /** Merges imported manual rules and atomically replaces only the manual rule store. */
+    public static SaveResult mergeImportedManualRules(Context context, List<LinkRuleEntry> imported) {
+        List<LinkRuleEntry> merged = new ArrayList<>(manualRuleEntriesForTransfer(context));
+        if (imported != null) merged.addAll(imported);
+        return replaceManualRuleEntries(context, merged);
+    }
+
+    private static SaveResult replaceManualRuleEntries(Context context, List<LinkRuleEntry> rawRules) {
+        Context app = app(context);
+        if (app == null) return new SaveResult(0, 0, 0, 0);
+        List<LinkRuleEntry> sourceRules = new ArrayList<>();
+        if (rawRules != null) for (LinkRuleEntry raw : rawRules) {
+            LinkRuleEntry safe = sanitizeForTransfer(raw);
+            if (safe == null || !LinkRuleEntry.SOURCE_MANUAL.equals(safe.source)
+                    || !isValidRulePackage(safe.sourcePackage)) continue;
+            sourceRules.add(new LinkRuleEntry(safe.sourcePackage, safe.host, safe.targetPackage,
+                    LinkRuleEntry.SOURCE_MANUAL, safe.urlConversion, safe.note));
+        }
+        sourceRules = deduplicateAndOrderStored(sourceRules);
+        List<LinkRuleEntry> effective = buildEffectiveRuleEntriesFromEntries(sourceRules, onlineRuleEntries(app));
+        persistRuntimeSnapshot(app, effective, prefs(app).edit()
+                .putString(KEY_SOURCE_RULES, serializeRuleEntries(sourceRules))
+                .remove(KEY_MANUAL)
+                .remove(LinkAutomationConfig.KEY_CUSTOM_MAPPINGS));
+        return new SaveResult(candidatesFromEntries(effective).size(), sourceRules.size(),
+                distinctPackages(onlineRuleEntries(app)).size(), 0);
+    }
     /** Rules grouped by source application; wildcard rules are grouped under "*". */
     public static Map<String, List<LinkRuleEntry>> sourceRulesByPackage(Context context) {
         Map<String, List<LinkRuleEntry>> result = new LinkedHashMap<>();
@@ -144,31 +186,26 @@ public final class RuleConfigRepository {
         return result;
     }
 
-    /** Saves source-scoped rules additively; blank/duplicate rows are discarded. */
+    /** Saves the complete source-scoped manual rule set; blank/duplicate rows are discarded. */
     public static SaveResult saveSourceRules(Context context, List<LinkRuleEntry> rawRules) {
         Context app = app(context);
         if (app == null) return new SaveResult(0, 0, 0, 0);
         List<LinkRuleEntry> sourceRules = new ArrayList<>();
         if (rawRules != null) for (LinkRuleEntry raw : rawRules) {
-            LinkRuleEntry safe = sanitizeEntry(raw);
-            if (safe == null || !validPackage(safe.sourcePackage)) continue;
+            LinkRuleEntry safe = sanitizeForTransfer(raw);
+            if (safe == null || !isValidRulePackage(safe.sourcePackage)) continue;
             sourceRules.add(new LinkRuleEntry(safe.sourcePackage, safe.host, safe.targetPackage,
                     LinkRuleEntry.SOURCE_MANUAL, safe.urlConversion, safe.note));
         }
         sourceRules = deduplicateAndOrderStored(sourceRules);
-        List<LinkRuleEntry> wildcard = new ArrayList<>();
-        for (LinkRuleEntry entry : sourceRules) {
-            if ("*".equals(entry.sourcePackage)) wildcard.add(entry);
-        }
-        List<LinkRuleEntry> effective = buildEffectiveRuleEntriesFromEntries(sourceRules,
-                onlineRuleEntries(app), FluidCloudRuleCatalog.builtInRuleEntries());
-        Map<String, List<String>> candidates = candidatesFromEntries(effective);
-        prefs(app).edit().putString(KEY_SOURCE_RULES, serializeRuleEntries(sourceRules))
-                .putString(KEY_EFFECTIVE, serializeFlatMap(candidates))
-                .putString(KEY_EFFECTIVE_CANDIDATES, serializeCandidateMap(candidates))
-                .putString(KEY_EFFECTIVE_RULES, serializeRuleEntries(effective)).apply();
-        return new SaveResult(candidates.size(), sourceRules.size(), distinctPackages(onlineRuleEntries(app)).size(),
-                distinctPackages(FluidCloudRuleCatalog.builtInRuleEntries()).size());
+        List<LinkRuleEntry> effective = buildEffectiveRuleEntriesFromEntries(
+                sourceRules, onlineRuleEntries(app));
+        persistRuntimeSnapshot(app, effective, prefs(app).edit()
+                .putString(KEY_SOURCE_RULES, serializeRuleEntries(sourceRules))
+                .remove(KEY_MANUAL)
+                .remove(LinkAutomationConfig.KEY_CUSTOM_MAPPINGS));
+        return new SaveResult(candidatesFromEntries(effective).size(), sourceRules.size(),
+                distinctPackages(onlineRuleEntries(app)).size(), 0);
     }
 
     /** Normalizes a newline, comma or semicolon separated list of domains or HTTP(S) URLs. */
@@ -193,36 +230,29 @@ public final class RuleConfigRepository {
         if (app == null) return new SaveResult(0, 0, 0, 0);
         Map<String, List<String>> manual = new LinkedHashMap<>();
         if (rawManualByPackage != null) for (Map.Entry<String, String> entry : rawManualByPackage.entrySet()) {
-            if (!validPackage(entry.getKey())) continue;
+            if (!isValidRulePackage(entry.getKey())) continue;
             List<String> hosts = normalizeUserHosts(entry.getValue());
             if (!hosts.isEmpty()) manual.put(entry.getKey(), hosts);
         }
         List<LinkRuleEntry> online = onlineRuleEntries(app);
-        List<LinkRuleEntry> defaults = FluidCloudRuleCatalog.builtInRuleEntries();
-        List<LinkRuleEntry> effective = buildEffectiveRuleEntries(manual, online, defaults);
-        Map<String, List<String>> candidates = candidatesFromEntries(effective);
-        prefs(app).edit()
+        List<LinkRuleEntry> effective = buildEffectiveRuleEntriesFromEntries(
+                manualRuleEntries(manual, sourceRuleEntries(app)), online);
+        persistRuntimeSnapshot(app, effective, prefs(app).edit()
                 .putString(KEY_MANUAL, serializeManualRules(manual))
-                .putString(KEY_EFFECTIVE, serializeFlatMap(candidates))
-                .putString(KEY_EFFECTIVE_CANDIDATES, serializeCandidateMap(candidates))
-                .putString(KEY_EFFECTIVE_RULES, serializeRuleEntries(effective))
-                .remove(LinkAutomationConfig.KEY_CUSTOM_MAPPINGS)
-                .apply();
-        return new SaveResult(candidates.size(), manual.size(), distinctPackages(online).size(), distinctPackages(defaults).size());
+                .remove(LinkAutomationConfig.KEY_CUSTOM_MAPPINGS));
+        return new SaveResult(candidatesFromEntries(effective).size(), manual.size(), distinctPackages(online).size(), 0);
     }
 
     private static List<LinkRuleEntry> buildEffectiveRuleEntriesFromEntries(List<LinkRuleEntry> manual,
-                                                                               List<LinkRuleEntry> online,
-                                                                               List<LinkRuleEntry> defaults) {
+                                                                             List<LinkRuleEntry> online) {
         List<LinkRuleEntry> ordered = new ArrayList<>();
         if (manual != null) ordered.addAll(manual);
         appendSource(ordered, online, LinkRuleEntry.SOURCE_ONLINE, Collections.<String>emptySet());
-        appendSource(ordered, defaults, LinkRuleEntry.SOURCE_BUILT_IN, Collections.<String>emptySet());
         LinkedHashMap<String, LinkRuleEntry> unique = new LinkedHashMap<>();
         LinkedHashSet<String> hosts = new LinkedHashSet<>();
         for (LinkRuleEntry raw : ordered) {
-            LinkRuleEntry safe = sanitizeEntry(raw);
-            if (safe == null || (!"*".equals(safe.sourcePackage) && !validPackage(safe.sourcePackage))) continue;
+            LinkRuleEntry safe = sanitizeForTransfer(raw);
+            if (safe == null || (!"*".equals(safe.sourcePackage) && !isValidRulePackage(safe.sourcePackage))) continue;
             if (!hosts.contains(safe.host) && hosts.size() >= MAX_HOSTS) continue;
             if (!unique.containsKey(ruleKey(safe))) { unique.put(ruleKey(safe), safe); hosts.add(safe.host); }
             if (unique.size() >= MAX_RULE_ENTRIES) break;
@@ -230,27 +260,24 @@ public final class RuleConfigRepository {
         return Collections.unmodifiableList(new ArrayList<>(unique.values()));
     }
 
-    /** Pure merge used by persistence and unit tests: manual > online > built-in. */
+    /** Pure merge used by persistence and unit tests: manual rules precede online rules. */
     static List<LinkRuleEntry> buildEffectiveRuleEntries(Map<String, List<String>> manual,
-                                                           List<LinkRuleEntry> online,
-                                                           List<LinkRuleEntry> defaults) {
-        Set<String> manualPackages = manual == null ? Collections.<String>emptySet() : manual.keySet();
+                                                           List<LinkRuleEntry> online) {
         List<LinkRuleEntry> ordered = new ArrayList<>();
         if (manual != null) for (Map.Entry<String, List<String>> item : manual.entrySet()) {
-            if (!validPackage(item.getKey())) continue;
+            if (!isValidRulePackage(item.getKey())) continue;
             for (String rawHost : item.getValue()) {
                 String host = normalizeHostOrUrl(rawHost);
                 if (host != null) ordered.add(new LinkRuleEntry(host, item.getKey(), LinkRuleEntry.SOURCE_MANUAL,
                         LinkRuleEntry.CONVERSION_NONE, "\u7528\u6237\u624b\u52a8\u586b\u5199"));
             }
         }
-        appendSource(ordered, online, LinkRuleEntry.SOURCE_ONLINE, manualPackages);
-        appendSource(ordered, defaults, LinkRuleEntry.SOURCE_BUILT_IN, manualPackages);
+        appendSource(ordered, online, LinkRuleEntry.SOURCE_ONLINE, Collections.<String>emptySet());
 
         LinkedHashMap<String, LinkRuleEntry> unique = new LinkedHashMap<>();
         LinkedHashSet<String> hosts = new LinkedHashSet<>();
         for (LinkRuleEntry entry : ordered) {
-            LinkRuleEntry safe = sanitizeEntry(entry);
+            LinkRuleEntry safe = sanitizeForTransfer(entry);
             if (safe == null) continue;
             if (!hosts.contains(safe.host) && hosts.size() >= MAX_HOSTS) continue;
             String key = ruleKey(safe);
@@ -264,7 +291,7 @@ public final class RuleConfigRepository {
                                      String source, Set<String> excludedPackages) {
         if (entries == null) return;
         for (LinkRuleEntry entry : entries) {
-            LinkRuleEntry safe = sanitizeEntry(entry);
+            LinkRuleEntry safe = sanitizeForTransfer(entry);
             if (safe == null || excludedPackages.contains(safe.targetPackage)) continue;
             target.add(new LinkRuleEntry(safe.sourcePackage, safe.host, safe.targetPackage, source, safe.urlConversion, safe.note));
         }
@@ -280,37 +307,110 @@ public final class RuleConfigRepository {
         return result;
     }
 
-    private static List<LinkRuleEntry> annotateLegacyCandidates(Context context, Map<String, List<String>> legacy) {
-        Map<String, List<String>> online = OnlineLinkRuleRepository.hostCandidates(context);
-        List<LinkRuleEntry> defaults = FluidCloudRuleCatalog.builtInRuleEntries();
-        Map<String, LinkRuleEntry> builtIn = indexEntries(defaults);
-        List<LinkRuleEntry> result = new ArrayList<>();
-        for (Map.Entry<String, List<String>> item : legacy.entrySet()) if (item.getValue() != null) for (String packageName : item.getValue()) {
-            String host = normalizeHostOrUrl(item.getKey());
-            if (host == null || !validPackage(packageName)) continue;
-            LinkRuleEntry defaultEntry = builtIn.get(host + '\u0000' + packageName);
-            if (defaultEntry != null) result.add(defaultEntry);
-            else if (online.containsKey(host) && online.get(host).contains(packageName)) result.add(new LinkRuleEntry(host, packageName,
-                    LinkRuleEntry.SOURCE_ONLINE, LinkRuleEntry.CONVERSION_NONE, "\u5728\u7ebf\u58f0\u660e\u5f0f\u89c4\u5219\uff08\u65e7\u5feb\u7167\uff09"));
-            else result.add(new LinkRuleEntry(host, packageName, LinkRuleEntry.SOURCE_MANUAL,
-                    LinkRuleEntry.CONVERSION_NONE, "\u65e7\u7248\u5df2\u4fdd\u5b58\u89c4\u5219"));
-        }
-        return Collections.unmodifiableList(result);
+    /** Rebuilds the only runtime snapshot from durable manual data plus the current online cache. */
+    private static List<LinkRuleEntry> buildCurrentEffectiveRuleEntries(Context app) {
+        return buildEffectiveRuleEntriesFromEntries(
+                manualRuleEntries(manualRulesByPackage(app), sourceRuleEntries(app)), onlineRuleEntries(app));
     }
 
-    private static Map<String, LinkRuleEntry> indexEntries(List<LinkRuleEntry> entries) {
-        Map<String, LinkRuleEntry> result = new LinkedHashMap<>();
-        if (entries != null) for (LinkRuleEntry entry : entries) {
-            LinkRuleEntry safe = sanitizeEntry(entry);
-            if (safe != null) result.put(safe.host + '\u0000' + safe.targetPackage, safe);
+    private static List<LinkRuleEntry> manualRuleEntries(Map<String, List<String>> manualByPackage,
+                                                           List<LinkRuleEntry> sourceRules) {
+        List<LinkRuleEntry> result = new ArrayList<>();
+        if (sourceRules != null) for (LinkRuleEntry entry : sourceRules) {
+            LinkRuleEntry safe = sanitizeForTransfer(entry);
+            if (safe != null && LinkRuleEntry.SOURCE_MANUAL.equals(safe.source)) result.add(safe);
+        }
+        if (manualByPackage != null) for (Map.Entry<String, List<String>> item : manualByPackage.entrySet()) {
+            if (!isValidRulePackage(item.getKey()) || item.getValue() == null) continue;
+            for (String rawHost : item.getValue()) {
+                String host = normalizeHostOrUrl(rawHost);
+                if (host != null) result.add(new LinkRuleEntry(host, item.getKey(),
+                        LinkRuleEntry.SOURCE_MANUAL, LinkRuleEntry.CONVERSION_NONE, "\u7528\u6237\u624b\u52a8\u586b\u5199"));
+            }
         }
         return result;
+    }
+
+    /** Writes a v3 audit snapshot and clears obsolete v1/v2 snapshots that could contain defaults. */
+    private static void persistRuntimeSnapshot(Context app, List<LinkRuleEntry> effective) {
+        persistRuntimeSnapshot(app, effective, prefs(app).edit());
+    }
+
+    private static void persistRuntimeSnapshot(Context app, List<LinkRuleEntry> effective,
+                                               SharedPreferences.Editor editor) {
+        editor.putString(KEY_EFFECTIVE_RULES, serializeRuleEntries(effective))
+                .remove(KEY_EFFECTIVE)
+                .remove(KEY_EFFECTIVE_CANDIDATES)
+                .apply();
+    }
+
+    private static Map<String, List<String>> filterInstalledCandidates(Context context,
+                                                                         Map<String, List<String>> configured) {
+        Context app = app(context);
+        if (configured == null || configured.isEmpty()) return Collections.emptyMap();
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : configured.entrySet()) {
+            if (entry.getValue() == null) continue;
+            List<String> retained = new ArrayList<>();
+            List<String> skipped = new ArrayList<>();
+            for (String packageName : entry.getValue()) {
+                if (isInstalledOrUnavailable(app, packageName)) retained.add(packageName);
+                else skipped.add(packageName);
+            }
+            if (!retained.isEmpty()) result.put(entry.getKey(), retained);
+            if (!skipped.isEmpty()) {
+                Log.i(TAG, "rule candidates filtered: host=" + entry.getKey()
+                        + ", configured=" + entry.getValue()
+                        + ", installed=" + retained
+                        + ", skippedNotInstalled=" + skipped);
+            }
+        }
+        return immutableRuleMap(result);
+    }
+
+    private static boolean isInstalledOrUnavailable(Context context, String packageName) {
+        if (context == null || !isValidRulePackage(packageName)) return false;
+        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                ? PackageManager.MATCH_UNINSTALLED_PACKAGES | PackageManager.MATCH_DISABLED_COMPONENTS
+                : PackageManager.GET_UNINSTALLED_PACKAGES | PackageManager.GET_DISABLED_COMPONENTS;
+        try {
+            android.content.pm.ApplicationInfo info =
+                    context.getPackageManager().getApplicationInfo(packageName, flags);
+            // MATCH_UNINSTALLED_PACKAGES also returns package records left behind after an
+            // uninstall.  They are not valid routing targets. FLAG_INSTALLED remains set for
+            // apps that are disabled or IceBox-frozen, so those targets stay eligible.
+            return info != null && (info.flags & android.content.pm.ApplicationInfo.FLAG_INSTALLED) != 0;
+        } catch (PackageManager.NameNotFoundException missing) {
+            return false;
+        } catch (Throwable unavailable) {
+            // PackageManager visibility faults must not disable a real frozen target. The app-side
+            // diagnostic makes this conservative fallback observable without querying from system_server.
+            Log.w(TAG, "package availability query unavailable: target=" + packageName
+                    + ", error=" + unavailable.getClass().getSimpleName());
+            return true;
+        }
+    }
+
+    /** Pure helper for unit tests and deterministic filtering of an already-known installed set. */
+    static Map<String, List<String>> filterCandidatesForInstalledPackages(
+            Map<String, List<String>> configured, Set<String> installedPackages) {
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        if (configured == null || installedPackages == null) return Collections.emptyMap();
+        for (Map.Entry<String, List<String>> entry : configured.entrySet()) {
+            if (entry.getValue() == null) continue;
+            List<String> retained = new ArrayList<>();
+            for (String packageName : entry.getValue()) {
+                if (installedPackages.contains(packageName) && !retained.contains(packageName)) retained.add(packageName);
+            }
+            if (!retained.isEmpty()) result.put(entry.getKey(), retained);
+        }
+        return immutableRuleMap(result);
     }
 
     private static Map<String, List<String>> candidatesFromEntries(List<LinkRuleEntry> entries) {
         Map<String, List<String>> result = new LinkedHashMap<>();
         if (entries != null) for (LinkRuleEntry entry : entries) {
-            LinkRuleEntry safe = sanitizeEntry(entry);
+            LinkRuleEntry safe = sanitizeForTransfer(entry);
             if (safe == null || (result.size() >= MAX_HOSTS && !result.containsKey(safe.host))) continue;
             List<String> values = result.get(safe.host);
             if (values == null) { values = new ArrayList<>(); result.put(safe.host, values); }
@@ -323,7 +423,7 @@ public final class RuleConfigRepository {
         Map<String, List<String>> result = new LinkedHashMap<>();
         if (source != null) for (Map.Entry<String, String> entry : source.entrySet()) {
             String host = normalizeHostOrUrl(entry.getKey());
-            if (host == null || !validPackage(entry.getValue())) continue;
+            if (host == null || !isValidRulePackage(entry.getValue())) continue;
             List<String> values = result.get(host);
             if (values == null) { values = new ArrayList<>(); result.put(host, values); }
             if (!values.contains(entry.getValue())) values.add(entry.getValue());
@@ -334,7 +434,7 @@ public final class RuleConfigRepository {
     private static Map<String, List<String>> groupByEntries(List<LinkRuleEntry> entries) {
         Map<String, List<String>> result = new LinkedHashMap<>();
         if (entries != null) for (LinkRuleEntry entry : entries) {
-            LinkRuleEntry safe = sanitizeEntry(entry);
+            LinkRuleEntry safe = sanitizeForTransfer(entry);
             if (safe == null) continue;
             List<String> hosts = result.get(safe.targetPackage);
             if (hosts == null) { hosts = new ArrayList<>(); result.put(safe.targetPackage, hosts); }
@@ -354,7 +454,7 @@ public final class RuleConfigRepository {
 
     private static Set<String> distinctPackages(List<LinkRuleEntry> entries) {
         Set<String> result = new LinkedHashSet<>();
-        if (entries != null) for (LinkRuleEntry entry : entries) if (sanitizeEntry(entry) != null) result.add(entry.targetPackage);
+        if (entries != null) for (LinkRuleEntry entry : entries) if (sanitizeForTransfer(entry) != null) result.add(entry.targetPackage);
         return result;
     }
 
@@ -369,7 +469,7 @@ public final class RuleConfigRepository {
                 JsonObject item = element.getAsJsonObject();
                 String packageName = primitive(item, "package");
                 JsonElement values = item.get("hosts");
-                if (!validPackage(packageName) || values == null || !values.isJsonArray()) continue;
+                if (!isValidRulePackage(packageName) || values == null || !values.isJsonArray()) continue;
                 List<String> hosts = new ArrayList<>();
                 for (JsonElement value : values.getAsJsonArray()) {
                     if (!value.isJsonPrimitive()) continue;
@@ -392,7 +492,7 @@ public final class RuleConfigRepository {
             for (JsonElement value : parsed.getAsJsonArray()) {
                 if (!value.isJsonObject()) continue;
                 JsonObject item = value.getAsJsonObject();
-                LinkRuleEntry entry = sanitizeEntry(new LinkRuleEntry(primitive(item, "sourcePackage"), primitive(item, "host"),
+                LinkRuleEntry entry = sanitizeForTransfer(new LinkRuleEntry(primitive(item, "sourcePackage"), primitive(item, "host"),
                         primitive(item, "package"), primitive(item, "source"), primitive(item, "conversion"), primitive(item, "note")));
                 if (entry != null) result.add(entry);
                 if (result.size() >= MAX_RULE_ENTRIES) break;
@@ -438,7 +538,7 @@ public final class RuleConfigRepository {
                 if (host == null || values == null || !values.isJsonArray()) continue;
                 for (JsonElement item : values.getAsJsonArray()) if (item.isJsonPrimitive()) {
                     String packageName = item.getAsString();
-                    if (!validPackage(packageName)) continue;
+                    if (!isValidRulePackage(packageName)) continue;
                     List<String> list = result.get(host);
                     if (list == null) { list = new ArrayList<>(); result.put(host, list); }
                     if (!list.contains(packageName)) list.add(packageName);
@@ -459,7 +559,7 @@ public final class RuleConfigRepository {
                 JsonObject item = element.getAsJsonObject();
                 String host = normalizeHostOrUrl(primitive(item, "host"));
                 String packageName = primitive(item, "package");
-                if (host != null && validPackage(packageName)) result.put(host, packageName);
+                if (host != null && isValidRulePackage(packageName)) result.put(host, packageName);
             }
         } catch (RuntimeException ignored) { return Collections.emptyMap(); }
         return Collections.unmodifiableMap(result);
@@ -478,7 +578,7 @@ public final class RuleConfigRepository {
     private static String serializeRuleEntries(List<LinkRuleEntry> entries) {
         JsonArray values = new JsonArray();
         for (LinkRuleEntry raw : entries) {
-            LinkRuleEntry entry = sanitizeEntry(raw); if (entry == null) continue;
+            LinkRuleEntry entry = sanitizeForTransfer(raw); if (entry == null) continue;
             JsonObject item = new JsonObject();
             item.addProperty("sourcePackage", entry.sourcePackage);
             item.addProperty("host", entry.host); item.addProperty("package", entry.targetPackage);
@@ -507,16 +607,16 @@ public final class RuleConfigRepository {
         return values.toString();
     }
 
-    private static LinkRuleEntry sanitizeEntry(LinkRuleEntry raw) {
+    static LinkRuleEntry sanitizeForTransfer(LinkRuleEntry raw) {
         if (raw == null) return null;
         String host = normalizeHostOrUrl(raw.host);
-        if (host == null || !validPackage(raw.targetPackage) || !validSource(raw.source) || !validConversion(raw.urlConversion)) return null;
+        if (host == null || !isValidRulePackage(raw.targetPackage) || !validSource(raw.source) || !validConversion(raw.urlConversion)) return null;
         String note = raw.note == null ? "" : raw.note.trim();
         if (note.length() > 160) note = note.substring(0, 160);
         return new LinkRuleEntry(raw.sourcePackage, host, raw.targetPackage, raw.source, raw.urlConversion, note);
     }
 
-    private static boolean validPackage(String packageName) { return packageName != null && ("*".equals(packageName) || PACKAGE_PATTERN.matcher(packageName).matches()); }
+    static boolean isValidRulePackage(String packageName) { return packageName != null && ("*".equals(packageName) || PACKAGE_PATTERN.matcher(packageName).matches()); }
     private static boolean validSource(String source) { return LinkRuleEntry.SOURCE_BUILT_IN.equals(source) || LinkRuleEntry.SOURCE_ONLINE.equals(source) || LinkRuleEntry.SOURCE_MANUAL.equals(source); }
     private static boolean validConversion(String conversion) { return LinkRuleEntry.CONVERSION_NONE.equals(conversion) || LinkRuleEntry.CONVERSION_FIXED_DEEP_LINK.equals(conversion); }
 
@@ -539,7 +639,11 @@ public final class RuleConfigRepository {
         String candidate = value.trim().toLowerCase(Locale.ROOT);
         if (candidate.isEmpty() || candidate.length() > 256) return null;
         if (candidate.startsWith("http://") || candidate.startsWith("https://")) {
-            try { candidate = Uri.parse(candidate).getHost(); } catch (Throwable ignored) { return null; }
+            try {
+                candidate = new java.net.URI(candidate).getHost();
+            } catch (Throwable ignored) {
+                return null;
+            }
         } else {
             if (candidate.startsWith("//")) candidate = candidate.substring(2);
             int end = candidate.length();
@@ -564,6 +668,3 @@ public final class RuleConfigRepository {
         }
     }
 }
-
-
-

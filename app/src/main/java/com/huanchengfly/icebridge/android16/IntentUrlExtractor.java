@@ -3,12 +3,21 @@ package com.huanchengfly.icebridge.android16;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 
 /** Extracts URLs embedded in common serialized Intent extras without depending on a host app. */
 public final class IntentUrlExtractor {
     private static final String[] MARKERS = {"S.rawUrl=", "S.url=", "rawUrl=", "url="};
+    // Extras can be supplied by another application. Keep parsing bounded so a malformed or
+    // cyclic Parcelable graph cannot consume unbounded system_server/app time or memory.
+    private static final int MAX_BUNDLE_DEPTH = 8;
+    private static final int MAX_SCAN_NODES = 256;
+    private static final int MAX_VALUE_LENGTH = 8192;
 
     private IntentUrlExtractor() {
     }
@@ -73,7 +82,18 @@ public final class IntentUrlExtractor {
         if (bundle == null) {
             return null;
         }
+        ScanState state = new ScanState();
+        return findEmbeddedUrl(bundle, 0, state);
+    }
+
+    private static String findEmbeddedUrl(Bundle bundle, int depth, ScanState state) {
+        if (bundle == null || depth > MAX_BUNDLE_DEPTH || !state.visit(bundle)) {
+            return null;
+        }
         for (String key : bundle.keySet()) {
+            if (!state.consumeNode()) {
+                return null;
+            }
             Object value;
             try {
                 value = bundle.get(key);
@@ -81,7 +101,7 @@ public final class IntentUrlExtractor {
                 continue;
             }
             if (value instanceof Bundle) {
-                String nested = findEmbeddedUrl((Bundle) value);
+                String nested = findEmbeddedUrl((Bundle) value, depth + 1, state);
                 if (!isEmpty(nested)) {
                     return nested;
                 }
@@ -96,7 +116,7 @@ public final class IntentUrlExtractor {
     }
 
     public static String extractUrl(String value) {
-        if (isEmpty(value)) {
+        if (isEmpty(value) || value.length() > MAX_VALUE_LENGTH) {
             return null;
         }
         String candidate = value.trim();
@@ -105,8 +125,11 @@ public final class IntentUrlExtractor {
             if (extracted != null) {
                 candidate = extracted.trim();
             }
-            // Do not URL-decode an already plain URL:  is valid URL data and
-            // URLDecoder would incorrectly turn it into a space.
+            if (candidate.length() > MAX_VALUE_LENGTH) {
+                return null;
+            }
+            // Do not URL-decode an already plain URL: is valid URL data and URLDecoder would
+            // incorrectly turn its plus signs into spaces.
             if (isSupportedUrl(candidate)) {
                 return candidate;
             }
@@ -116,7 +139,7 @@ public final class IntentUrlExtractor {
             }
             candidate = decoded.trim();
         }
-        return isSupportedUrl(candidate) ? candidate : null;
+        return candidate.length() <= MAX_VALUE_LENGTH && isSupportedUrl(candidate) ? candidate : null;
     }
 
     private static String decodeComponent(String value) {
@@ -126,6 +149,7 @@ public final class IntentUrlExtractor {
             return value;
         }
     }
+
     private static String extractMarkedValue(String value) {
         for (String marker : MARKERS) {
             int start = value.indexOf(marker);
@@ -149,5 +173,18 @@ public final class IntentUrlExtractor {
                 || value.startsWith("alipay://") || value.startsWith("alipays://")
                 || value.startsWith("alipayqr://") || value.startsWith("alipayauth://")
                 || value.startsWith("alipayre://"));
+    }
+
+    private static final class ScanState {
+        private int nodes;
+        private final Set<Bundle> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        boolean visit(Bundle bundle) {
+            return visited.add(bundle);
+        }
+
+        boolean consumeNode() {
+            return ++nodes <= MAX_SCAN_NODES;
+        }
     }
 }
