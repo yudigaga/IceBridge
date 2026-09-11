@@ -57,12 +57,19 @@ public class SingleChooseAdapter extends RecyclerView.Adapter<MyViewHolder> {
         ItemBean itemBean = itemBeans.get(position);
         SingleChooseView singleChooseView = holder.getView(R.id.single_choose);
         singleChooseView.setOnClickListener(v -> {
+            int adapterPosition = holder.getAdapterPosition();
+            if (adapterPosition == RecyclerView.NO_POSITION || adapterPosition >= itemBeans.size()) {
+                return;
+            }
+            ItemBean selectedItem = itemBeans.get(adapterPosition);
             ((SingleChooseView) v).setChecked(true);
-            int oldPos = selectedPos + 0;
-            notifyItemChanged(oldPos);
-            selectedPos = position;
+            int oldPos = selectedPos;
+            if (oldPos >= 0 && oldPos < itemBeans.size() && oldPos != adapterPosition) {
+                notifyItemChanged(oldPos);
+            }
+            selectedPos = adapterPosition;
             if (getOnItemSelectedListener() != null) {
-                getOnItemSelectedListener().onSelected(position, itemBean);
+                getOnItemSelectedListener().onSelected(adapterPosition, selectedItem);
             }
         });
         singleChooseView.setChecked(position == selectedPos);

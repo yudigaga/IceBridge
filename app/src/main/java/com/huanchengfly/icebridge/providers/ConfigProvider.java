@@ -8,6 +8,7 @@ import android.os.Build;
 import android.content.Context;
 import android.content.UriMatcher;
 import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Binder;
@@ -213,14 +214,40 @@ public class ConfigProvider extends ContentProvider {
     @Override
     public Uri insert(@NonNull Uri uri, @Nullable ContentValues values) {
         enforceSystemServerCaller();
-        if (uriMatcher.match(uri) == MATCH_CODE && values != null) {
-            Log.i(TAG, "insert");
-            for (Map.Entry<String, Object> entry : values.valueSet()) {
-                new AppConfig(entry.getKey(), (String) entry.getValue()).saveOrUpdate("key = ?", entry.getKey());
-            }
-            notifyChange();
+        if (uriMatcher.match(uri) != MATCH_CODE) {
+            throw new IllegalArgumentException("Unsupported config URI: " + uri);
         }
-        return null;
+        Map<String, String> sanitized = sanitizeValues(values);
+        boolean transactionStarted = false;
+        SQLiteDatabase database = null;
+        try {
+            database = LitePal.getDatabase();
+            database.beginTransaction();
+            transactionStarted = true;
+            for (Map.Entry<String, String> entry : sanitized.entrySet()) {
+                new AppConfig(entry.getKey(), entry.getValue())
+                        .saveOrUpdate("key = ?", entry.getKey());
+            }
+            database.setTransactionSuccessful();
+        } catch (Throwable error) {
+            Log.w(TAG, "insert failed: " + error.getClass().getSimpleName(), error);
+            throw new IllegalStateException("Unable to persist config update", error);
+        } finally {
+            if (transactionStarted && database != null) {
+                database.endTransaction();
+            }
+        }
+        Log.i(TAG, "insert count=" + sanitized.size());
+        notifyChange();
+        return uri;
+    }
+
+    /** Validates the small, cross-process configuration surface before it reaches LitePal. */
+    static Map<String, String> sanitizeValues(@Nullable ContentValues values) {
+        if (values == null || values.size() == 0) {
+            throw new IllegalArgumentException("Config values must not be empty");
+        }
+        return ConfigProviderValueValidator.sanitizeEntries(values.valueSet());
     }
 
     @Override

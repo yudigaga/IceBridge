@@ -66,12 +66,19 @@ public class GridChooseAppAdapter extends RecyclerView.Adapter<MyViewHolder> {
         TextView subtitle = holder.getView(R.id.subtitle);
         ImageView icon = holder.getView(R.id.icon);
         holder.itemView.setOnClickListener(v -> {
+            int adapterPosition = holder.getAdapterPosition();
+            if (adapterPosition == RecyclerView.NO_POSITION || adapterPosition >= packages.size()) {
+                return;
+            }
+            String selectedPackage = packages.get(adapterPosition);
             int oldPos = selectedPos;
-            notifyItemChanged(oldPos);
-            selectedPos = position;
-            notifyItemChanged(selectedPos);
+            if (oldPos >= 0 && oldPos < packages.size() && oldPos != adapterPosition) {
+                notifyItemChanged(oldPos);
+            }
+            selectedPos = adapterPosition;
+            notifyItemChanged(adapterPosition);
             if (getOnItemSelectedListener() != null) {
-                getOnItemSelectedListener().onSelected(position, pkgName);
+                getOnItemSelectedListener().onSelected(adapterPosition, selectedPackage);
             }
         });
         title.setText(PackageUtil.getAppName(getContext(), pkgName));

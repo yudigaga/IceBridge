@@ -26,10 +26,7 @@ public final class RootEngine extends BaseEngine {
             callback.onFailure();
             return;
         }
-        String command = enabled
-                ? "pm enable " + packageName + " && pm unhide " + packageName
-                : "pm disable-user " + packageName;
-        RootCommandRunner.execute(command, result -> {
+        RootCommandRunner.setPackageEnabled(packageName, enabled, result -> {
             if (result.isSuccessful()) {
                 callback.onSuccess();
             } else {
@@ -44,16 +41,14 @@ public final class RootEngine extends BaseEngine {
 
     @Override
     public int getEngineStatus() {
-        switch (RootCommandRunner.getStatus()) {
-            case WORKING:
-                return STATUS_WORKING;
-            case NEED_PERMISSION:
-                return STATUS_NEED_PERMISSION;
-            case UNKNOWN:
-            case NOT_AVAILABLE:
-            default:
-                return STATUS_NOT_AVAILABLE;
+        RootCommandRunner.Status rootStatus = RootCommandRunner.getStatus();
+        if (rootStatus == RootCommandRunner.Status.WORKING) {
+            return BaseEngine.STATUS_WORKING;
         }
+        if (rootStatus == RootCommandRunner.Status.NEED_PERMISSION) {
+            return BaseEngine.STATUS_NEED_PERMISSION;
+        }
+        return BaseEngine.STATUS_NOT_AVAILABLE;
     }
 
     @Override

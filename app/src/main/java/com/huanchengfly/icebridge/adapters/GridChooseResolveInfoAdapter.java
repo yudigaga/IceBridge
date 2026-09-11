@@ -69,12 +69,19 @@ public class GridChooseResolveInfoAdapter extends RecyclerView.Adapter<MyViewHol
         ImageView icon = holder.getView(R.id.icon);
         View disabled = holder.getView(R.id.disabled);
         holder.itemView.setOnClickListener(v -> {
+            int adapterPosition = holder.getAdapterPosition();
+            if (adapterPosition == RecyclerView.NO_POSITION || adapterPosition >= mResolveInfos.size()) {
+                return;
+            }
+            ResolveInfo selectedResolveInfo = mResolveInfos.get(adapterPosition);
             int oldPos = selectedPos;
-            notifyItemChanged(oldPos);
-            selectedPos = position;
-            notifyItemChanged(position);
+            if (oldPos >= 0 && oldPos < mResolveInfos.size() && oldPos != adapterPosition) {
+                notifyItemChanged(oldPos);
+            }
+            selectedPos = adapterPosition;
+            notifyItemChanged(adapterPosition);
             if (getOnItemSelectedListener() != null) {
-                getOnItemSelectedListener().onSelected(position, resolveInfo);
+                getOnItemSelectedListener().onSelected(adapterPosition, selectedResolveInfo);
             }
         });
         title.setText(resolveInfo.loadLabel(getContext().getPackageManager()));

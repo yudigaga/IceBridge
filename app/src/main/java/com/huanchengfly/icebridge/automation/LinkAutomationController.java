@@ -6,6 +6,8 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Process;
+import android.os.UserHandle;
 import android.text.TextUtils;
 
 import com.huanchengfly.icebridge.android16.CustomSchemeTargetResolver;
@@ -17,6 +19,7 @@ import com.huanchengfly.icebridge.engines.RootEngine;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.lang.reflect.Method;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -153,19 +156,35 @@ public final class LinkAutomationController {
     private static void launchResolved(Context app, Uri uri, String target, boolean background, String source,
                                        Completion completion) {
         if (background && EngineManager.getEngine(app) instanceof RootEngine) {
-            String command = "am start --user 0 -a android.intent.action.VIEW -d "
-                    + shellQuote(uri.toString()) + " -p " + shellQuote(target);
-            RootCommandRunner.execute(command, result -> {
-                if (result.isSuccessful()) {
-                    LinkAutomationDiagnostics.record(app, "open_ok", uri.toString(), "target=" + target + " source=" + source + " via=root");
-                    finish(completion);
-                } else {
-                    LinkAutomationDiagnostics.record(app, "open_retry", uri.toString(), "ROOT_AM_FAILED target=" + target);
-                    launchFromApp(app, uri, target, source, completion);
-                }
-            });
+            int userId = currentUserIdCompat();
+            if (userId >= 0) {
+                RootCommandRunner.startViewAsUser(uri, target, userId, result -> {
+                    if (result.isSuccessful()) {
+                        LinkAutomationDiagnostics.record(app, "open_ok", uri.toString(), "target=" + target + " source=" + source + " via=root");
+                        finish(completion);
+                    } else {
+                        LinkAutomationDiagnostics.record(app, "open_retry", uri.toString(), "ROOT_AM_FAILED target=" + target);
+                        launchFromApp(app, uri, target, source, completion);
+                    }
+                });
+                return;
+            }
+            LinkAutomationDiagnostics.record(app, "open_retry", uri.toString(), "ROOT_USER_UNKNOWN target=" + target);
         } else {
             launchFromApp(app, uri, target, source, completion);
+            return;
+        }
+        launchFromApp(app, uri, target, source, completion);
+    }
+
+    private static int currentUserIdCompat() {
+        try {
+            Method method = UserHandle.class.getDeclaredMethod("getUserId", Integer.TYPE);
+            method.setAccessible(true);
+            Object value = method.invoke(null, Process.myUid());
+            return value instanceof Integer && (Integer) value >= 0 ? (Integer) value : -1;
+        } catch (Throwable ignored) {
+            return -1;
         }
     }
 
@@ -288,10 +307,6 @@ public final class LinkAutomationController {
         } catch (Throwable ignored) {
             return null;
         }
-    }
-
-    private static String shellQuote(String value) {
-        return "'" + value.replace("'", "'\\\"'\\\"'") + "'";
     }
 
     private static void finish(Completion completion) {

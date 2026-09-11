@@ -1053,7 +1053,14 @@ public final class IceBridgeModule extends XposedModule {
                     .putExtra(EXTRA_TARGET_PACKAGE, targetPackage)
                     .putExtra(EXTRA_ORIGINAL_INTENT, original)
                     .putExtra(EXTRA_AUTO_OPEN, autoOpen)
-                    .putExtra(EXTRA_PLAY_STORE, playStoreFallback);
+                    .putExtra(EXTRA_PLAY_STORE, playStoreFallback)
+                    .putExtra(EXTRA_SOURCE_PACKAGE,
+                            original == null ? null : (original.getPackage() != null
+                                    ? original.getPackage()
+                                    : original.getComponent() == null ? null
+                                    : original.getComponent().getPackageName()))
+                    .putExtra(EXTRA_USER_ID, userId)
+                    .putExtra("original_url", original == null ? null : original.getDataString());
             UserHandle userHandle = (UserHandle) UserHandle.class
                     .getMethod("of", Integer.TYPE).invoke(null, userId);
             Context.class.getMethod("sendBroadcastAsUser", Intent.class, UserHandle.class)

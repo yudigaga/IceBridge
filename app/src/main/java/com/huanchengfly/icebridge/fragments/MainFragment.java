@@ -190,7 +190,7 @@ public class MainFragment extends BaseFragment implements SwipeRefreshLayout.OnR
                 configUpdateIcon.setImageTintList(getAttachContext().getResources().getColorStateList(R.color.green));
                 configUpdateIcon.setVisibility(View.VISIBLE);
                 configUpdateProgress.setVisibility(View.GONE);
-                configUpdateTitle.setText(getAttachContext().getString(R.string.title_no_update, getAttachContext().getString(R.string.title_config)));
+                configUpdateTitle.setText(getAttachContext().getString(R.string.title_no_update));
                 configUpdateSubtitle.setText(getAttachContext().getString(R.string.tip_update, BridgeUtil.getVersionName(getAttachContext()), mUpdateInfo.getConfigVersionName()));
                 configUpdateSubtitle.setVisibility(View.VISIBLE);
                 configUpdateButton.setVisibility(View.GONE);
@@ -262,7 +262,7 @@ public class MainFragment extends BaseFragment implements SwipeRefreshLayout.OnR
                 appUpdateIcon.setImageTintList(getAttachContext().getResources().getColorStateList(R.color.green));
                 appUpdateIcon.setVisibility(View.VISIBLE);
                 appUpdateProgress.setVisibility(View.GONE);
-                appUpdateTitle.setText(getAttachContext().getString(R.string.title_no_update, getAttachContext().getString(R.string.app_name) + " "));
+                appUpdateTitle.setText(getAttachContext().getString(R.string.title_no_update));
                 appUpdateSubtitle.setText(getAttachContext().getString(R.string.tip_update, PackageUtil.getVersionName(getAttachContext()), mUpdateInfo.getAppVersionName()));
                 appUpdateSubtitle.setVisibility(View.VISIBLE);
                 appUpdateButton.setVisibility(View.GONE);

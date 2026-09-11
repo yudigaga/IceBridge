@@ -455,9 +455,10 @@ public class BridgeActivity extends BaseActivity {
         try {
             Intent replay = new Intent();
             replay.setAction(sourceIntent.getAction());
-            replay.setData(sourceIntent.getData());
-            replay.setType(sourceIntent.getType());
-            replay.setIdentifier(sourceIntent.getIdentifier());
+            setIntentDataAndType(replay, sourceIntent.getData(), sourceIntent.getType());
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                replay.setIdentifier(sourceIntent.getIdentifier());
+            }
             replay.setComponent(sourceIntent.getComponent());
             replay.setPackage(sourceIntent.getPackage());
             if (sourceIntent.getCategories() != null) {
@@ -523,9 +524,11 @@ public class BridgeActivity extends BaseActivity {
             return sanitized;
         }
         sanitized.setAction(source.getAction());
-        sanitized.setType(source.getType());
-        sanitized.setData(replacementData == null ? source.getData() : Uri.parse(replacementData));
-        sanitized.setIdentifier(source.getIdentifier());
+        Uri sanitizedData = replacementData == null ? source.getData() : Uri.parse(replacementData);
+        setIntentDataAndType(sanitized, sanitizedData, source.getType());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            sanitized.setIdentifier(source.getIdentifier());
+        }
         sanitized.setComponent(source.getComponent());
         sanitized.setPackage(source.getPackage());
         Set<String> categories = source.getCategories();
@@ -534,6 +537,16 @@ public class BridgeActivity extends BaseActivity {
         }
         copySafeExtras(source.getExtras(), sanitized);
         return sanitized;
+    }
+
+    private static void setIntentDataAndType(Intent intent, @Nullable Uri data, @Nullable String type) {
+        if (data != null && type != null) {
+            intent.setDataAndType(data, type);
+        } else if (data != null) {
+            intent.setData(data);
+        } else if (type != null) {
+            intent.setType(type);
+        }
     }
 
     private void copySafeExtras(@Nullable Bundle extras, Intent destination) {

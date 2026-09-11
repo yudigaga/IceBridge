@@ -4,6 +4,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.net.Uri;
 
 import androidx.annotation.NonNull;
 
@@ -68,7 +69,7 @@ public final class RootCommandRunner {
     }
 
     public static void refreshStatus(Callback callback) {
-        execute("id -u", result -> {
+        executeCommand("id -u", result -> {
             if (!result.started) {
                 status = Status.NOT_AVAILABLE;
             } else if (result.isSuccessful() && result.isRoot()) {
@@ -82,7 +83,29 @@ public final class RootCommandRunner {
         });
     }
 
-    public static void execute(String command, Callback callback) {
+    public static void setPackageEnabled(String packageName, boolean enabled, Callback callback) {
+        if (!isValidPackageName(packageName)) {
+            completeFailure(callback);
+            return;
+        }
+        String command = enabled
+                ? "pm enable " + packageName + " && pm unhide " + packageName
+                : "pm disable-user " + packageName;
+        executeCommand(command, callback);
+    }
+
+    public static void startViewAsUser(Uri uri, String targetPackage, int userId, Callback callback) {
+        if (!isValidWebUri(uri) || !isValidPackageName(targetPackage)
+                || !isValidUserId(userId)) {
+            completeFailure(callback);
+            return;
+        }
+        String command = "am start --user " + userId + " -a android.intent.action.VIEW -d "
+                + shellQuote(uri.toString()) + " -p " + shellQuote(targetPackage);
+        executeCommand(command, callback);
+    }
+
+    private static void executeCommand(String command, Callback callback) {
         if (callback == null) {
             return;
         }
@@ -163,6 +186,77 @@ public final class RootCommandRunner {
                 closeQuietly(process.getOutputStream());
             }
         }
+    }
+
+    private static void completeFailure(Callback callback) {
+        if (callback != null) {
+            Handler handler = getMainHandler();
+            if (handler != null) {
+                handler.post(() -> callback.onComplete(
+                        new Result(false, false, -1, false, "")));
+            } else {
+                callback.onComplete(new Result(false, false, -1, false, ""));
+            }
+        }
+    }
+
+    static boolean isValidPackageName(String packageName) {
+        return packageName != null
+                && packageName.matches("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+");
+    }
+
+    static boolean isValidUserId(int userId) {
+        return userId >= 0 && userId <= 999;
+    }
+
+    static boolean isValidWebUri(Uri uri) {
+        if (uri == null) {
+            return false;
+        }
+        return isValidWebUrl(uri.toString());
+    }
+
+    static boolean isValidWebUrl(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        int schemeSeparator = value.indexOf("://");
+        if (schemeSeparator <= 0) {
+            return false;
+        }
+        String scheme = value.substring(0, schemeSeparator);
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+            return false;
+        }
+        int authorityStart = schemeSeparator + 3;
+        int authorityEnd = value.indexOf('/', authorityStart);
+        if (authorityEnd < 0) {
+            authorityEnd = value.indexOf('?', authorityStart);
+        }
+        if (authorityEnd < 0) {
+            authorityEnd = value.indexOf('#', authorityStart);
+        }
+        if (authorityEnd < 0) {
+            authorityEnd = value.length();
+        }
+        String authority = value.substring(authorityStart, authorityEnd);
+        if (authority.isEmpty() || authority.startsWith(":")
+                || authority.indexOf('@') >= 0 || authority.indexOf(' ') >= 0) {
+            return false;
+        }
+        return value.indexOf('\'') < 0
+                && value.indexOf('"') < 0
+                && value.indexOf(';') < 0
+                && value.indexOf('|') < 0
+                && value.indexOf('&') < 0
+                && value.indexOf('$') < 0
+                && value.indexOf('`') < 0
+                && value.indexOf('\r') < 0
+                && value.indexOf('\n') < 0;
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\\"'\\\"'") + "'";
     }
 
     private static void destroyProcess(Process process) {

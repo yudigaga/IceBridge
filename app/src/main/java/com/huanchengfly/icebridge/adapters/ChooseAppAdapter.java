@@ -57,12 +57,19 @@ public class ChooseAppAdapter extends RecyclerView.Adapter<MyViewHolder> {
         String pkgName = packages.get(position);
         SingleChooseView singleChooseView = holder.getView(R.id.single_choose);
         singleChooseView.setOnClickListener(v -> {
+            int adapterPosition = holder.getAdapterPosition();
+            if (adapterPosition == RecyclerView.NO_POSITION || adapterPosition >= packages.size()) {
+                return;
+            }
+            String selectedPackage = packages.get(adapterPosition);
             ((SingleChooseView) v).setChecked(true);
-            int oldPos = selectedPos + 0;
-            notifyItemChanged(oldPos);
-            selectedPos = position;
+            int oldPos = selectedPos;
+            if (oldPos >= 0 && oldPos < packages.size() && oldPos != adapterPosition) {
+                notifyItemChanged(oldPos);
+            }
+            selectedPos = adapterPosition;
             if (getOnItemSelectedListener() != null) {
-                getOnItemSelectedListener().onSelected(position, pkgName);
+                getOnItemSelectedListener().onSelected(adapterPosition, selectedPackage);
             }
         });
         singleChooseView.setChecked(position == selectedPos);

@@ -1,0 +1,53 @@
+name: Android
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build tools
+        shell: pwsh
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - name: Configure CI signing
+        shell: pwsh
+        run: |
+          $keystore = Join-Path $env:GITHUB_WORKSPACE "ci-release.jks"
+          keytool -genkeypair -noprompt `
+            -keystore $keystore `
+            -storepass changeit `
+            -keypass changeit `
+            -alias ci-release `
+            -keyalg RSA `
+            -keysize 2048 `
+            -validity 3650 `
+            -dname "CN=IceBridge CI, OU=CI, O=IceBridge, C=US"
+          @"
+          storeFile=$keystore
+          storePassword=changeit
+          keyAlias=ci-release
+          keyPassword=changeit
+          "@ | Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "keystore.properties")
+      - name: Test, lint and assemble
+        shell: pwsh
+        run: |
+          $buildTools = Join-Path $env:ANDROID_HOME "build-tools\34.0.0"
+          $env:Path = "$buildTools;$env:Path"
+          .\gradlew.bat test lintDebug assembleRelease --stacktrace
+      - name: Verify release package
+        shell: pwsh
+        run: |
+          $buildTools = Join-Path $env:ANDROID_HOME "build-tools\34.0.0"
+          $env:Path = "$buildTools;$env:Path"
+          $apk = Get-ChildItem -Recurse -Filter "IceBridge-v0.0.78-release.apk" |
+            Select-Object -First 1
+          if ($null -eq $apk) { throw "Release APK not found" }
+          & .\tools\verify-release.ps1 -Apk $apk.FullName
