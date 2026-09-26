@@ -47,7 +47,7 @@ jobs:
         run: |
           $buildTools = Join-Path $env:ANDROID_HOME "build-tools\34.0.0"
           $env:Path = "$buildTools;$env:Path"
-          $apk = Get-ChildItem -Recurse -Filter "IceBridge-v0.0.78-release.apk" |
+          $apk = Get-ChildItem -Recurse -Filter "IceBridge-v0.0.79-release.apk" |
             Select-Object -First 1
           if ($null -eq $apk) { throw "Release APK not found" }
           & .\tools\verify-release.ps1 -Apk $apk.FullName

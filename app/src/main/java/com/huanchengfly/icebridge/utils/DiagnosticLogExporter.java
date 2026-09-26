@@ -246,6 +246,7 @@ public final class DiagnosticLogExporter {
         String lower = line.toLowerCase(Locale.US);
         return line.startsWith("===/data/adb/lspd/log/")
                 || lower.contains("com.huanchengfly.icebridge")
+                || lower.contains("io.github.yudigaga.icebridge")
                 || lower.contains("icebridge")
                 || lower.contains("resolve recovery")
                 || lower.contains("package-state capability");

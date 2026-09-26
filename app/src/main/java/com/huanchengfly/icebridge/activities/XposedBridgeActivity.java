@@ -13,7 +13,7 @@ import com.huanchengfly.icebridge.engines.EngineManager;
 import com.huanchengfly.icebridge.utils.PackageUtil;
 
 public class XposedBridgeActivity extends BaseActivity {
-    public static final String INTENT_ACTION = "com.huanchengfly.icebridge.intent.action.XPOSED_BRIDGE";
+    public static final String INTENT_ACTION = "io.github.yudigaga.icebridge.intent.action.XPOSED_BRIDGE";
     public static final String EXTRA_PACKAGE = "package";
 
     private String packageName;

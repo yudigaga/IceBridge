@@ -1,6 +1,6 @@
-id=com.huanchengfly.icebridge
+id=io.github.yudigaga.icebridge
 name=Ice Bridge
-version=0.0.78
-versionCode=78
+version=0.0.79
+versionCode=79
 minApiVersion=102
 targetApiVersion=102

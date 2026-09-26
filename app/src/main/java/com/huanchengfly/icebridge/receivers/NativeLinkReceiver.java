@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Receives lightweight URLs observed by the system-server hook and performs app-process work. */
 public final class NativeLinkReceiver extends BroadcastReceiver {
     public static final String ACTION_NATIVE_LINK_CAPTURED =
-            "com.huanchengfly.icebridge.action.NATIVE_LINK_CAPTURED";
+            "io.github.yudigaga.icebridge.action.NATIVE_LINK_CAPTURED";
     public static final String EXTRA_URL = "url";
     public static final String EXTRA_SOURCE = "source";
     public static final String EXTRA_SOURCE_PACKAGE = "source_package";
@@ -30,7 +30,7 @@ public final class NativeLinkReceiver extends BroadcastReceiver {
     private static final int MAX_URL_LENGTH = 8192;
     private static final long MAX_EVENT_AGE_MILLIS = 2 * 60_000L;
     private static final long ASYNC_TIMEOUT_MILLIS = 10_000L;
-    private static final String APP_PACKAGE = "com.huanchengfly.icebridge";
+    private static final String APP_PACKAGE = "io.github.yudigaga.icebridge";
     private static final String RECEIVER_CLASS =
             "com.huanchengfly.icebridge.receivers.NativeLinkReceiver";
     private static final String SOURCE_CLIPBOARD = "clipboard";

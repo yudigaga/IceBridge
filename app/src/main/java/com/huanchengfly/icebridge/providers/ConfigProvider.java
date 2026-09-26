@@ -38,7 +38,7 @@ import com.catchingnow.icebox.sdk_client.IceBox;
 public class ConfigProvider extends ContentProvider {
     public static final String TAG = "ConfigProvider";
 
-    private static final String AUTHORITY = "com.huanchengfly.icebridge.providers.ConfigProvider";
+    private static final String AUTHORITY = "io.github.yudigaga.icebridge.providers.ConfigProvider";
     public static final Uri URI = Uri.parse("content://" + AUTHORITY + "/config");
     private static final int MATCH_CODE = 200;
     private static UriMatcher uriMatcher;

@@ -8,7 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 public final class SystemServerConfigContract {
-    public static final String AUTHORITY = "com.huanchengfly.icebridge.providers.ConfigProvider";
+    public static final String AUTHORITY = "io.github.yudigaga.icebridge.providers.ConfigProvider";
     public static final String METHOD_GET_SNAPSHOT = "get_system_server_snapshot";
     public static final String KEY_SCHEMA_VERSION = "schema_version";
     public static final String KEY_XHS_RECOVERY = "xhs_resolve_recovery";

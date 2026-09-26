@@ -42,7 +42,7 @@
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL">
             <intent-filter>
-                <action android:name="com.huanchengfly.icebridge.action.NATIVE_LINK_CAPTURED" />
+                <action android:name="io.github.yudigaga.icebridge.action.NATIVE_LINK_CAPTURED" />
             </intent-filter>
         </receiver>
 
@@ -289,7 +289,7 @@
         </provider>
         <provider
             android:name=".providers.ConfigProvider"
-            android:authorities="com.huanchengfly.icebridge.providers.ConfigProvider"
+            android:authorities="io.github.yudigaga.icebridge.providers.ConfigProvider"
             android:exported="true"
             android:readPermission="android.permission.INTERACT_ACROSS_USERS_FULL"
             android:writePermission="android.permission.INTERACT_ACROSS_USERS_FULL"

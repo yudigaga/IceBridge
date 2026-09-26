@@ -49,7 +49,7 @@ import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
 
 public final class IceBridgeModule extends XposedModule {
-    private static final String PACKAGE_NAME = "com.huanchengfly.icebridge";
+    private static final String PACKAGE_NAME = "io.github.yudigaga.icebridge";
     private static final String TAG = "IceBridge";
     private static final String CHROME_PACKAGE = "com.android.chrome";
     private static final long CONFIG_RETRY_INTERVAL_MILLIS = 30_000L;
@@ -61,9 +61,9 @@ public final class IceBridgeModule extends XposedModule {
     // The app process must perform Root/IceBox work first. Launching from its receiver is
     // blocked by Android 16 BAL, so system_server retries the original launch after this delay.
     private static final long SYSTEM_AUTO_OPEN_DELAY_MILLIS = 900L;
-    private static final String ACTION_RECOVER_LINK = "com.huanchengfly.icebridge.action.RECOVER_LINK";
+    private static final String ACTION_RECOVER_LINK = "io.github.yudigaga.icebridge.action.RECOVER_LINK";
     private static final String ACTION_NATIVE_LINK_CAPTURED =
-            "com.huanchengfly.icebridge.action.NATIVE_LINK_CAPTURED";
+            "io.github.yudigaga.icebridge.action.NATIVE_LINK_CAPTURED";
     private static final String EXTRA_TARGET_PACKAGE = "target_package";
     private static final String EXTRA_ORIGINAL_INTENT = "original_intent";
     private static final String EXTRA_AUTO_OPEN = "auto_open";

@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string] $Apk,
-    [string] $ExpectedVersion = "0.0.78",
+    [string] $ExpectedVersion = "0.0.79",
     [string] $ExpectedCertificateSha256 = ""
 )
 
@@ -24,7 +24,7 @@ Write-Host "APK: $apkPath"
 $badging = (& $aapt2 dump badging $apkPath | Out-String)
 if ($LASTEXITCODE -ne 0) { throw "aapt2 dump badging failed" }
 
-if ($badging -notmatch "package: name='com\.huanchengfly\.icebridge'") {
+if ($badging -notmatch "package: name='io\.github\.yudigaga\.icebridge'") {
     throw "Unexpected applicationId"
 }
 if ($badging -notmatch ("versionName='" + [regex]::Escape($ExpectedVersion) + "'")) {

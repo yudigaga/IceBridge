@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class LinkRecoveryReceiver extends BroadcastReceiver {
     private static final String TAG = "IceBridgeRecovery";
-    public static final String ACTION_RECOVER_LINK = "com.huanchengfly.icebridge.action.RECOVER_LINK";
+    public static final String ACTION_RECOVER_LINK = "io.github.yudigaga.icebridge.action.RECOVER_LINK";
     public static final String EXTRA_TARGET_PACKAGE = "target_package";
     public static final String EXTRA_ORIGINAL_INTENT = "original_intent";
     public static final String EXTRA_AUTO_OPEN = "auto_open";
@@ -32,7 +32,7 @@ public final class LinkRecoveryReceiver extends BroadcastReceiver {
     public static final String EXTRA_SOURCE_PACKAGE = "source_package";
     public static final String EXTRA_USER_ID = "user_id";
     public static final String EXTRA_ORIGINAL_URL = "original_url";
-    private static final String APP_PACKAGE = "com.huanchengfly.icebridge";
+    private static final String APP_PACKAGE = "io.github.yudigaga.icebridge";
     private static final String RECEIVER_CLASS =
             "com.huanchengfly.icebridge.receivers.LinkRecoveryReceiver";
     private static final long ASYNC_TIMEOUT_MILLIS = 10_000L;
