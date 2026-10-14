@@ -1,0 +1,237 @@
+{
+  "format": "icebridge-online-rules",
+  "version": 1,
+  "revision": 1,
+  "rules": [
+    {
+      "sourcePackage": "*",
+      "host": "twitter.com",
+      "package": "com.twitter.android",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bilibili.com",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "b23.tv",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bilibili.cn",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bilibili.tv",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bili22.cn",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bili23.cn",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bili33.cn",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "m.acg.tv",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bili2233.cn",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bilibili.smgbb.cn",
+      "package": "com.example.piliplus",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "youtube.com",
+      "package": "com.google.android.youtube",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "youto.be",
+      "package": "com.google.android.youtube",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bilibili.com",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "b23.tv",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bilibili.cn",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bilibili.tv",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bili22.cn",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bili23.cn",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bili33.cn",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "m.acg.tv",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bili2233.cn",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "bilibili.smgbb.cn",
+      "package": "tv.danmaku.bili",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "xhslink.com",
+      "package": "com.xingin.xhs",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "xiaohongshu.com",
+      "package": "com.xingin.xhs",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "douyin.com",
+      "package": "com.ss.android.ugc.aweme",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "yangkeduo.com",
+      "package": "com.xunmeng.pinduoduo",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "srgnnmsrg.com",
+      "package": "com.xunmeng.pinduoduo",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "pinduoduo.com",
+      "package": "com.xunmeng.pinduoduo",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "weibo.com",
+      "package": "com.sina.weibo",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "zhihu.com",
+      "package": "com.zhihu.android",
+      "conversion": "none",
+      "note": ""
+    },
+    {
+      "sourcePackage": "*",
+      "host": "coolapk.com",
+      "package": "com.coolapk.market",
+      "conversion": "none",
+      "note": ""
+    }
+  ],
+  "provenance": {
+    "repository": "https://github.com/nyehueh/shortx-Fluid_Cloud",
+    "commit": "c343298036121b3841e7d16024e68317ba63c541",
+    "upstreamFiles": 27,
+    "policy": "pkg plus exact domains only; no upstream executable code"
+  }
+}

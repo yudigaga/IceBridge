@@ -1,0 +1,102 @@
+import copy
+import hashlib
+from pathlib import Path
+import tempfile
+import unittest
+
+import manage_rules as rules
+
+
+def snapshot(revision=1):
+    return {"format": rules.FORMAT, "version": 1, "revision": revision,
+            "rules": [{"sourcePackage": "*", "host": "example.com", "package": "com.example.app",
+                       "conversion": "none", "note": ""}]}
+
+
+class RuleMaintenanceTests(unittest.TestCase):
+    def test_exact_domains_only(self):
+        self.assertEqual("example.com", rules.normalize_host(r"example\.com"))
+        for value in ("https://example.com", "*.example.com", "example.com/path",
+                      "^example.com$", r"example\d.com", "(foo|bar).com", 123):
+            with self.subTest(value=value):
+                self.assertIsNone(rules.normalize_host(value))
+
+    def test_supported_conversion_and_sources(self):
+        document = snapshot()
+        document["rules"][0].update(sourcePackage="com.tencent.mm", conversion="fixed_deep_link")
+        self.assertIs(document, rules.validate_document(document))
+        for patch in ({"conversion": "javascript:run()"}, {"sourcePackage": "bad"},
+                      {"package": "a" * 256 + ".app"}, {"note": "😀" * 257}):
+            candidate = copy.deepcopy(document)
+            candidate["rules"][0].update(patch)
+            with self.assertRaises(ValueError):
+                rules.validate_document(candidate)
+
+    def test_strict_schema_and_revision(self):
+        for patch in ({"version": True}, {"revision": 0}, {"revision": 1 << 63},
+                      {"unexpected": "value"}, {"provenance": []}):
+            candidate = snapshot()
+            candidate.update(patch)
+            with self.assertRaises(ValueError):
+                rules.validate_document(candidate)
+        document = snapshot()
+        document["rules"].append(copy.deepcopy(document["rules"][0]))
+        with self.assertRaises(ValueError):
+            rules.validate_document(document)
+
+    def test_limits_fail_without_truncation(self):
+        document = snapshot()
+        document["rules"] = [dict(document["rules"][0], host=f"host{i}.example.com") for i in range(97)]
+        with self.assertRaisesRegex(ValueError, "96 distinct hosts"):
+            rules.validate_document(document)
+        self.assertEqual(97, len(document["rules"]))
+        document["rules"] = [dict(document["rules"][0], package=f"com.example.app{i}") for i in range(769)]
+        with self.assertRaisesRegex(ValueError, "768 rules"):
+            rules.validate_document(document)
+
+    def test_build_immutable_and_full_replacement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "rules.json"
+            output = directory / "public"
+            source.write_bytes(rules.encode(snapshot()))
+            manifest = rules.build(source, output)
+            first = output / manifest["file"]
+            original_bytes = first.read_bytes()
+            self.assertEqual(hashlib.sha256(original_bytes).hexdigest(), manifest["sha256"])
+            self.assertEqual(manifest, rules.build(source, output))
+            changed = snapshot()
+            changed["rules"] = []
+            source.write_bytes(rules.encode(changed))
+            with self.assertRaisesRegex(ValueError, "increment revision"):
+                rules.build(source, output)
+            changed["revision"] = 2
+            source.write_bytes(rules.encode(changed))
+            latest = rules.build(source, output)
+            self.assertEqual([], rules.read_json(output / latest["file"])["rules"])
+            self.assertEqual(original_bytes, first.read_bytes())
+            source.write_bytes(rules.encode(snapshot()))
+            with self.assertRaisesRegex(ValueError, "backwards"):
+                rules.build(source, output)
+
+    def test_extracts_all_files_without_running_or_copying_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            entries = []
+            for index in range(70):
+                path = f"rules/{index:03d}.json"
+                document = {"type": "pkg", "pkg": f"com.example.app{index}",
+                            "tigger": [r"example\.com", "^.*$"],
+                            "script": "never_execute_this()"}
+                rules.write_once(directory / path, rules.encode(document))
+                entries.append({"path": path, "sha256": "test-record"})
+            archive = {"files": entries, "fileCount": 70, "commit": "a" * 40}
+            candidate, report = rules.extract_safe_rules(directory, archive, 1)
+            self.assertEqual(70, len(candidate["rules"]))
+            self.assertEqual(70, report["excludedByReason"]["trigger_not_exact_domain"])
+            self.assertNotIn(b"never_execute_this", rules.encode(candidate))
+            self.assertNotIn(b"never_execute_this", rules.encode(report))
+
+
+if __name__ == "__main__":
+    unittest.main()
