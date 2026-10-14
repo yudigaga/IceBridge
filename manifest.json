@@ -1,0 +1,7 @@
+{
+  "format": "icebridge-rule-manifest",
+  "version": 1,
+  "revision": 1,
+  "file": "revisions/rules-000001.json",
+  "sha256": "e840f50919b022b085621c34394c7d09fde1373e22467e490bbb8c8633a05203"
+}

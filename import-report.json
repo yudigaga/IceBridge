@@ -1,0 +1,178 @@
+{
+  "repository": "nyehueh/shortx-Fluid_Cloud",
+  "commit": "c343298036121b3841e7d16024e68317ba63c541",
+  "upstreamFiles": 27,
+  "acceptedRules": 32,
+  "uniqueHosts": 22,
+  "uniquePackages": 10,
+  "excludedByReason": {
+    "invalid_package": 1,
+    "trigger_not_exact_domain": 2,
+    "type_not_pkg": 16
+  },
+  "excluded": [
+    {
+      "file": "rules/115.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/123网盘.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/1688.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/X.json",
+      "triggerIndex": 0,
+      "reason": "trigger_not_exact_domain"
+    },
+    {
+      "file": "rules/telegram.json",
+      "reason": "invalid_package"
+    },
+    {
+      "file": "rules/tvbox.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/京东.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/夸克.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/库街区.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/快手.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/拼多多.json",
+      "triggerIndex": 1,
+      "reason": "trigger_not_exact_domain"
+    },
+    {
+      "file": "rules/淘宝.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/百度网盘.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/百度贴吧.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/米游社.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/美团.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/美团外卖.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/闲鱼.json",
+      "reason": "type_not_pkg"
+    },
+    {
+      "file": "rules/阿里云盘.json",
+      "reason": "type_not_pkg"
+    }
+  ],
+  "files": [
+    {
+      "file": "rules/X.json",
+      "acceptedRules": 1,
+      "ignoredFields": [
+        "name"
+      ],
+      "sha256": "18427550d2ee0fee4c822c829147cbc2e80013e3cec447f41333a203cfe535b1"
+    },
+    {
+      "file": "rules/piliplus.json",
+      "acceptedRules": 10,
+      "ignoredFields": [
+        "name"
+      ],
+      "sha256": "2745eb685be51e6ad6be04c0a7746c5eec9c7ab998e0f473b9014e7b056920ae"
+    },
+    {
+      "file": "rules/youturbe.json",
+      "acceptedRules": 2,
+      "ignoredFields": [
+        "name"
+      ],
+      "sha256": "85d79e148cb8a5a6747b1ff852806b1058159af34f26916895ee221cd01277e5"
+    },
+    {
+      "file": "rules/哔哩哔哩.json",
+      "acceptedRules": 10,
+      "ignoredFields": [
+        "name"
+      ],
+      "sha256": "0fd2500249985416dbd5a1ce38dd6358601af377c6bf0a14d9f82d3ef74b839e"
+    },
+    {
+      "file": "rules/小红书.json",
+      "acceptedRules": 2,
+      "ignoredFields": [
+        "activityname",
+        "name"
+      ],
+      "sha256": "028fdc0883c1f3604fb737128b43e4c29d334415f8d9ac104f937040b177df66"
+    },
+    {
+      "file": "rules/抖音.json",
+      "acceptedRules": 1,
+      "ignoredFields": [
+        "name"
+      ],
+      "sha256": "4e36e29d319ac5c4c4233f050c35878a4c9b139902cf20336041095113c61cef"
+    },
+    {
+      "file": "rules/拼多多.json",
+      "acceptedRules": 3,
+      "ignoredFields": [
+        "activityname",
+        "name"
+      ],
+      "sha256": "a3f3f758d3fdcbd9bcbbc884ec276ea535106c5da24b3c92ca2525a1983751f5"
+    },
+    {
+      "file": "rules/新浪微博.json",
+      "acceptedRules": 1,
+      "ignoredFields": [
+        "name"
+      ],
+      "sha256": "a3838aa6c01cb22a2b155b73621bfebbdb1ede221520d3707ad3c2855e5dc8bb"
+    },
+    {
+      "file": "rules/知乎.json",
+      "acceptedRules": 1,
+      "ignoredFields": [
+        "name"
+      ],
+      "sha256": "588146ff335ebf1e512029b7d9d57896982e125bd4fa3153f0ccc1fbb30b15cb"
+    },
+    {
+      "file": "rules/酷安.json",
+      "acceptedRules": 1,
+      "ignoredFields": [
+        "name"
+      ],
+      "sha256": "082f634146bc835dd655556fab3eb8a1151bff74b13f568f268eeaed65c95036"
+    }
+  ],
+  "policy": "Every upstream file inspected; no file-count or host-count truncation. All fields other than type/pkg/tigger are discarded, including code. This is a full candidate snapshot, not an additive merge."
+}
