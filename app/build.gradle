@@ -2,8 +2,24 @@ apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
-// Use an isolated output directory so a locked legacy APK cannot block packaging.
-buildDir = file('build79')
+def releaseVersion = new Properties()
+rootProject.file('version.properties').withInputStream { releaseVersion.load(it) }
+def generatedModuleResources = layout.buildDirectory.dir('generated/xposed-resources')
+def generateModuleMetadata = tasks.register('generateModuleMetadata') {
+    inputs.file(rootProject.file('version.properties'))
+    outputs.dir(generatedModuleResources)
+    doLast {
+        def metadata = generatedModuleResources.get().file('META-INF/xposed/module.prop').asFile
+        metadata.parentFile.mkdirs()
+        metadata.setText("""id=${releaseVersion.applicationId}
+name=Ice Bridge
+version=${releaseVersion.versionName}
+versionCode=${releaseVersion.versionCode}
+minApiVersion=102
+targetApiVersion=102
+""", 'UTF-8')
+    }
+}
 
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 def keystoreProperties = new Properties()
@@ -15,11 +31,11 @@ android {
     namespace "com.huanchengfly.icebridge"
     compileSdkVersion 34
     defaultConfig {
-        applicationId "io.github.yudigaga.icebridge"
+        applicationId releaseVersion.applicationId
         minSdkVersion 26
         targetSdkVersion 33
-        versionCode 79
-        versionName "0.0.79"
+        versionCode releaseVersion.versionCode.toInteger()
+        versionName releaseVersion.versionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -62,13 +78,16 @@ android {
     testOptions {
         unitTests.returnDefaultValues = true
     }
+    sourceSets.main.resources.srcDir(generateModuleMetadata)
 }
+
+tasks.named('preBuild').configure { dependsOn(generateModuleMetadata) }
 
 
 // Keep installable artifacts uniquely named so a transferred APK cannot be confused with an older app-debug.apk.
 android.applicationVariants.all { variant ->
     variant.outputs.all { output ->
-        output.outputFileName = "IceBridge-v0.0.79-${variant.buildType.name}.apk"
+        output.outputFileName = "IceBridge-v${variant.versionName}-${variant.buildType.name}.apk"
     }
 }
 dependencies {

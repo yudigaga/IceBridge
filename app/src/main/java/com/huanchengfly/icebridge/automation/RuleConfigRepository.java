@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.text.TextUtils;
 import android.util.Log;
+import com.huanchengfly.icebridge.SystemServerConfigContract;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -26,7 +27,7 @@ import java.util.regex.Pattern;
 
 /**
  * Persists an auditable routing snapshot. Individual rules are kept separate here; only the
- * system_server hand-off is compacted to host=package1,package2. Thus different candidates,
+ * system_server hand-off retains source, host, package, origin and conversion. Thus different candidates,
  * rule origins and the reviewed URL conversion flag are never lost because a host is shared.
  */
 public final class RuleConfigRepository {
@@ -42,6 +43,8 @@ public final class RuleConfigRepository {
     private static final int MAX_RULE_ENTRIES = MAX_HOSTS * 8;
     private static final Pattern PACKAGE_PATTERN = Pattern.compile("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+");
     private static final Pattern HOST_PATTERN = Pattern.compile("[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+");
+    private static RuleInputs cachedInputs;
+    private static List<LinkRuleEntry> cachedEffective = Collections.emptyList();
 
     private RuleConfigRepository() { }
 
@@ -51,11 +54,15 @@ public final class RuleConfigRepository {
      * bundled host routing data in those snapshots, which could keep an uninstalled package as a
      * candidate after an upgrade.
      */
-    public static List<LinkRuleEntry> effectiveRuleEntries(Context context) {
+    public static synchronized List<LinkRuleEntry> effectiveRuleEntries(Context context) {
         Context app = app(context);
         if (app == null) return Collections.emptyList();
+        RuleInputs inputs = new RuleInputs(prefs(app), onlineRuleEntries(app));
+        if (inputs.equals(cachedInputs)) return cachedEffective;
         List<LinkRuleEntry> effective = buildCurrentEffectiveRuleEntries(app);
         persistRuntimeSnapshot(app, effective);
+        cachedInputs = inputs;
+        cachedEffective = Collections.unmodifiableList(new ArrayList<>(effective));
         return effective;
     }
 
@@ -71,17 +78,7 @@ public final class RuleConfigRepository {
      * Clipboard and legacy callers should pass "*".
      */
     public static Map<String, List<String>> effectiveHostCandidates(Context context, String sourcePackage) {
-        String source = sourcePackage == null || sourcePackage.trim().isEmpty() ? "*" : sourcePackage.trim();
-        List<LinkRuleEntry> all = effectiveRuleEntries(context);
-        List<LinkRuleEntry> exact = new ArrayList<>();
-        List<LinkRuleEntry> wildcard = new ArrayList<>();
-        for (LinkRuleEntry entry : all) {
-            if (source.equals(entry.sourcePackage)) exact.add(entry);
-            else if ("*".equals(entry.sourcePackage)) wildcard.add(entry);
-        }
-        List<LinkRuleEntry> selected = new ArrayList<>(exact);
-        selected.addAll(wildcard);
-        return candidatesFromEntries(selected);
+        return candidatesFromEntries(ScopedRuleResolver.rulesForSource(effectiveRuleEntries(context), sourcePackage));
     }
     public static Map<String, String> effectiveHostMappings(Context context) {
         Map<String, String> result = new LinkedHashMap<>();
@@ -97,13 +94,20 @@ public final class RuleConfigRepository {
      * and IceBox-frozen packages remain eligible because their ApplicationInfo is still queryable.
      */
     public static String[] systemServerEntries(Context context) {
-        Map<String, List<String>> configured = effectiveHostCandidates(context);
-        Map<String, List<String>> installed = filterInstalledCandidates(context, configured);
-        List<String> entries = new ArrayList<>();
-        for (Map.Entry<String, List<String>> entry : installed.entrySet()) {
-            if (!entry.getValue().isEmpty()) entries.add(entry.getKey() + "=" + TextUtils.join(",", entry.getValue()));
+        return ScopedRuleResolver.encode(installedRuleEntries(context));
+    }
+
+    /** Both the producer and the app-side boundary must evaluate the same installed projection. */
+    public static List<LinkRuleEntry> installedRuleEntries(Context context) {
+        List<LinkRuleEntry> entries = effectiveRuleEntries(context);
+        Set<String> inspected = new LinkedHashSet<>();
+        Set<String> installed = new LinkedHashSet<>();
+        for (LinkRuleEntry entry : entries) {
+            if (inspected.add(entry.targetPackage) && isInstalledOrUnavailable(app(context), entry.targetPackage)) {
+                installed.add(entry.targetPackage);
+            }
         }
-        return entries.toArray(new String[0]);
+        return ScopedRuleResolver.filterInstalled(entries, installed);
     }
 
     /** Manual fields grouped by target package, including one-time legacy free-form migration. */
@@ -298,13 +302,7 @@ public final class RuleConfigRepository {
     }
 
     private static List<LinkRuleEntry> onlineRuleEntries(Context context) {
-        List<LinkRuleEntry> result = new ArrayList<>();
-        for (Map.Entry<String, List<String>> entry : OnlineLinkRuleRepository.hostCandidates(context).entrySet()) {
-            if (entry.getValue() == null) continue;
-            for (String packageName : entry.getValue()) result.add(new LinkRuleEntry(entry.getKey(), packageName,
-                    LinkRuleEntry.SOURCE_ONLINE, LinkRuleEntry.CONVERSION_NONE, "\u5728\u7ebf\u58f0\u660e\u5f0f\u89c4\u5219"));
-        }
-        return result;
+        return OnlineLinkRuleRepository.ruleEntries(context);
     }
 
     /** Rebuilds the only runtime snapshot from durable manual data plus the current online cache. */
@@ -336,12 +334,36 @@ public final class RuleConfigRepository {
         persistRuntimeSnapshot(app, effective, prefs(app).edit());
     }
 
-    private static void persistRuntimeSnapshot(Context app, List<LinkRuleEntry> effective,
+    private static synchronized void persistRuntimeSnapshot(Context app, List<LinkRuleEntry> effective,
                                                SharedPreferences.Editor editor) {
         editor.putString(KEY_EFFECTIVE_RULES, serializeRuleEntries(effective))
                 .remove(KEY_EFFECTIVE)
                 .remove(KEY_EFFECTIVE_CANDIDATES)
                 .apply();
+        // A simultaneous online refresh must not be recorded as an input to an older result.
+        cachedInputs = null;
+        SystemServerConfigContract.notifyChanged(app);
+    }
+
+    /** Derived snapshot writes are deliberately not inputs, so ordinary reads stay read-only. */
+    private static final class RuleInputs {
+        final SharedPreferences preferences;
+        final String manual, scoped, legacy;
+        final List<LinkRuleEntry> online;
+        RuleInputs(SharedPreferences preferences, List<LinkRuleEntry> online) {
+            this.preferences = preferences;
+            this.manual = preferences.getString(KEY_MANUAL, "");
+            this.scoped = preferences.getString(KEY_SOURCE_RULES, "");
+            this.legacy = preferences.getString(LinkAutomationConfig.KEY_CUSTOM_MAPPINGS, "");
+            this.online = online;
+        }
+        @Override public boolean equals(Object other) {
+            if (!(other instanceof RuleInputs)) return false;
+            RuleInputs value = (RuleInputs) other;
+            return preferences == value.preferences && manual.equals(value.manual) && scoped.equals(value.scoped)
+                    && legacy.equals(value.legacy) && online.equals(value.online);
+        }
+        @Override public int hashCode() { return java.util.Objects.hash(manual, scoped, legacy, online); }
     }
 
     private static Map<String, List<String>> filterInstalledCandidates(Context context,
@@ -483,7 +505,7 @@ public final class RuleConfigRepository {
         return result;
     }
 
-    private static List<LinkRuleEntry> parseRuleEntries(String raw) {
+    static List<LinkRuleEntry> parseRuleEntries(String raw) {
         if (raw == null || raw.length() > 128 * 1024) return Collections.emptyList();
         List<LinkRuleEntry> result = new ArrayList<>();
         try {
@@ -610,13 +632,15 @@ public final class RuleConfigRepository {
     static LinkRuleEntry sanitizeForTransfer(LinkRuleEntry raw) {
         if (raw == null) return null;
         String host = normalizeHostOrUrl(raw.host);
-        if (host == null || !isValidRulePackage(raw.targetPackage) || !validSource(raw.source) || !validConversion(raw.urlConversion)) return null;
+        if (host == null || !isValidRulePackage(raw.sourcePackage) || "*".equals(raw.targetPackage)
+                || !isValidRulePackage(raw.targetPackage) || !validSource(raw.source) || !validConversion(raw.urlConversion)) return null;
         String note = raw.note == null ? "" : raw.note.trim();
         if (note.length() > 160) note = note.substring(0, 160);
         return new LinkRuleEntry(raw.sourcePackage, host, raw.targetPackage, raw.source, raw.urlConversion, note);
     }
 
-    static boolean isValidRulePackage(String packageName) { return packageName != null && ("*".equals(packageName) || PACKAGE_PATTERN.matcher(packageName).matches()); }
+    static boolean isValidRulePackage(String packageName) { return packageName != null && packageName.length() <= 255
+            && ("*".equals(packageName) || PACKAGE_PATTERN.matcher(packageName).matches()); }
     private static boolean validSource(String source) { return LinkRuleEntry.SOURCE_BUILT_IN.equals(source) || LinkRuleEntry.SOURCE_ONLINE.equals(source) || LinkRuleEntry.SOURCE_MANUAL.equals(source); }
     private static boolean validConversion(String conversion) { return LinkRuleEntry.CONVERSION_NONE.equals(conversion) || LinkRuleEntry.CONVERSION_FIXED_DEEP_LINK.equals(conversion); }
 
@@ -652,7 +676,7 @@ public final class RuleConfigRepository {
         }
         if (candidate == null) return null;
         while (candidate.startsWith(".")) candidate = candidate.substring(1);
-        return HOST_PATTERN.matcher(candidate).matches() ? candidate : null;
+        return candidate.length() <= 128 && HOST_PATTERN.matcher(candidate).matches() ? candidate : null;
     }
 
     private static Context app(Context context) { return context == null ? null : context.getApplicationContext(); }

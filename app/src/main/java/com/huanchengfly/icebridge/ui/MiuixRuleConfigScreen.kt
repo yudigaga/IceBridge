@@ -2,12 +2,14 @@ package com.huanchengfly.icebridge.ui
 
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.widget.ImageView
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,17 +38,23 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.huanchengfly.icebridge.activities.RuleConfigActivity
 import com.huanchengfly.icebridge.automation.LinkRuleEntry
+import com.huanchengfly.icebridge.automation.LinkAutomationConfig
 import com.huanchengfly.icebridge.automation.LinkAutomationDiagnostics
 import com.huanchengfly.icebridge.automation.OnlineLinkRuleRepository
 import com.huanchengfly.icebridge.automation.RuleConfigRepository
 import com.huanchengfly.icebridge.automation.RuleConfigTransfer
+import com.huanchengfly.icebridge.automation.RuleEditorValidation
+import com.huanchengfly.icebridge.automation.ScopedRuleResolver
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.TextField
@@ -54,6 +62,7 @@ import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -74,36 +83,41 @@ object MiuixRuleConfigScreen {
 
 private data class DeviceRuleApp(val packageName: String, val label: String, val icon: Drawable?)
 
-private data class EditableRule(
-    val sourcePackage: String,
-    val targetPackage: String = "",
-    val hostsText: String = "",
-    val conversion: String = LinkRuleEntry.CONVERSION_NONE,
-    val note: String = ""
-) {
-    companion object {
-        fun from(entry: LinkRuleEntry) = EditableRule(
-            sourcePackage = entry.sourcePackage,
-            targetPackage = entry.targetPackage,
-            hostsText = entry.host,
-            conversion = entry.urlConversion,
-            note = entry.note
-        )
-    }
-}
+private val EditableRulesSaver = listSaver<List<EditableRule>, String>(
+    save = { DraftRowsCodec.encode(it) }, restore = { DraftRowsCodec.decode(it) }
+)
 
 @Composable
 private fun RuleConfigPage(activity: RuleConfigActivity) {
-    var drafts by remember {
+    var drafts by rememberSaveable(stateSaver = EditableRulesSaver) {
         mutableStateOf(RuleConfigRepository.sourceRuleEntries(activity).map(EditableRule::from))
     }
     var onlineVersion by remember { mutableIntStateOf(0) }
     var savedVersion by remember { mutableIntStateOf(0) }
-    var editingTarget by remember { mutableStateOf<String?>(null) }
-    var showTargetPicker by remember { mutableStateOf(false) }
+    var editingTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var showTargetPicker by rememberSaveable { mutableStateOf(false) }
     var showEffectiveRules by remember { mutableStateOf(false) }
+    var showPreview by rememberSaveable { mutableStateOf(false) }
     var pullInProgress by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("\u89c4\u5219\u6309\u76ee\u6807\u5e94\u7528\u663e\u793a\uff1b\u586b\u5199\u57df\u540d\u6216 HTTP(S) URL \u540e\u4fdd\u5b58") }
+    var transferInProgress by remember { mutableStateOf(false) }
+    var savingTarget by remember { mutableStateOf(false) }
+    var editorSaveError by remember { mutableStateOf<String?>(null) }
+    val refreshRequests = remember { RefreshGeneration() }
+    DisposableEffect(activity) { onDispose { refreshRequests.invalidate() } }
+    var status by rememberSaveable { mutableStateOf("点击目标应用编辑；编辑器中的“保存并生效”会立即保存规则") }
+    DisposableEffect(activity) {
+        val preferences = activity.getSharedPreferences(LinkAutomationConfig.PREFS, Context.MODE_PRIVATE)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            // A refresh started by the previous Activity may finish after recreation. Observe
+            // persisted inputs as well as the current request, without touching editor rows.
+            if (key == "rule_config_source_rules_v1" || key?.startsWith("online_") == true) {
+                savedVersion++
+                onlineVersion++
+            }
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
 
     // PackageManager enumeration, labels and icons are comparatively expensive on vendor ROMs.
     // Load them once off the composition thread; the picker itself uses a lazy, searchable list.
@@ -114,8 +128,16 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
         deviceAppsLoading = false
     }
     val appsByPackage = remember(deviceApps) { deviceApps.associateBy { it.packageName } }
-    val effectiveEntries = remember(onlineVersion, savedVersion) {
-        RuleConfigRepository.effectiveRuleEntries(activity)
+    var effectiveEntries by remember { mutableStateOf<List<LinkRuleEntry>>(emptyList()) }
+    var rulesLoading by remember { mutableStateOf(true) }
+    LaunchedEffect(activity, onlineVersion, savedVersion) {
+        val snapshot = withContext(Dispatchers.IO) {
+            RuleConfigRepository.sourceRuleEntries(activity).map(EditableRule::from) to
+                RuleConfigRepository.effectiveRuleEntries(activity)
+        }
+        drafts = snapshot.first
+        effectiveEntries = snapshot.second
+        rulesLoading = false
     }
     // Manual and online candidates mostly have a wildcard source. Grouping by source would
     // therefore collapse the entire catalog into one generic row. The UI groups by destination
@@ -134,6 +156,7 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
     val transferScope = rememberCoroutineScope()
 
     fun transferError(error: Throwable): String {
+        if (error is CancellationException) throw error
         val cause = error.cause
         val detail = buildString {
             append(error.javaClass.simpleName)
@@ -163,7 +186,13 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
     }
 
     fun processImportedRules(uri: Uri, source: String) {
+        if (editingTarget != null || savingTarget) {
+            status = "请先保存或取消当前编辑，再重新导入规则"
+            return
+        }
+        transferInProgress = true
         transferScope.launch {
+            try {
             val text = try {
                 withContext(Dispatchers.IO) { readTransferText(activity, uri) }
             } catch (error: Throwable) {
@@ -194,6 +223,7 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
                 LinkAutomationDiagnostics.record(activity, "rule_import_merge_failed", uri.toString(), "$source $detail")
                 status = "\u5bfc\u5165\u5931\u8d25\uff1a\u65e0\u6cd5\u4fdd\u5b58\u89c4\u5219\uff08$detail\uff09"
             }
+            } finally { transferInProgress = false }
         }
     }
 
@@ -250,37 +280,20 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
         onDispose { activity.setRuleTransferResultListener(null) }
     }
 
-    val saveRules = {
-        val entries = ArrayList<LinkRuleEntry>()
-        drafts.forEach { draft ->
-            val source = draft.sourcePackage.trim().ifEmpty { "*" }
-            val target = draft.targetPackage.trim()
-            RuleConfigRepository.normalizeUserHosts(draft.hostsText).forEach { host ->
-                entries.add(LinkRuleEntry(
-                    source, host, target, LinkRuleEntry.SOURCE_MANUAL,
-                    draft.conversion, draft.note.trim()
-                ))
-            }
-        }
-        val result = RuleConfigRepository.saveSourceRules(activity, entries)
-        // Re-read the sanitized, de-duplicated manual entries so the editor accurately reflects
-        // what was persisted (invalid package names and blank rows are intentionally dropped).
-        drafts = RuleConfigRepository.sourceRuleEntries(activity).map(EditableRule::from)
-        savedVersion++
-        status = "已保存 ${result.effectiveHosts} 个生效域名；规则会在后续跳转中使用。"
-    }
-
     val pullRules = {
+        val request = refreshRequests.begin()
         pullInProgress = true
         status = "正在拉取在线规则…"
         OnlineLinkRuleRepository.setEnabled(activity, true)
         OnlineLinkRuleRepository.refreshAsync(activity) { result ->
-            pullInProgress = false
-            onlineVersion++
-            status = if (result.success) {
-                "已拉取 ${result.count} 条在线规则；手动规则不会被覆盖，后续跳转会立即使用。"
-            } else {
-                result.message
+            if (refreshRequests.accepts(request)) {
+                pullInProgress = false
+                onlineVersion++
+                status = if (result.success) {
+                    "已拉取 ${result.count} 条在线规则；手动规则保留，正在编辑的内容不会被替换。"
+                } else {
+                    result.message
+                }
             }
         }
     }
@@ -321,7 +334,7 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
                         }
                     }
                 }
-                RuleToolbarIcon(android.R.drawable.ic_menu_add, "\u5bfc\u5165\u89c4\u5219", true) {
+                RuleToolbarIcon(android.R.drawable.ic_menu_add, "\u5bfc\u5165\u89c4\u5219", editingTarget == null && !transferInProgress && !savingTarget) {
                     LinkAutomationDiagnostics.record(activity, "rule_import_launch_requested", null, "primary")
                     try {
                         activity.launchRuleImport(documentsUiIntent(Intent.ACTION_GET_CONTENT, "*/*"))
@@ -346,8 +359,8 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
                         }
                     }
                 }
-                RuleToolbarIcon(android.R.drawable.ic_menu_save, "\u4fdd\u5b58", true, saveRules)
-                RuleToolbarIcon(android.R.drawable.ic_popup_sync, "\u62c9\u53d6\u5728\u7ebf\u89c4\u5219", !pullInProgress, pullRules)
+                RuleToolbarIcon(android.R.drawable.ic_menu_search, "测试链接规则", true) { showPreview = true }
+                RuleToolbarIcon(android.R.drawable.ic_popup_sync, "\u62c9\u53d6\u5728\u7ebf\u89c4\u5219", !pullInProgress && editingTarget == null && !transferInProgress, pullRules)
             }
         )
     }) { padding: PaddingValues ->
@@ -384,7 +397,11 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
                     fontSize = 14.sp,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                 )
-                if (targets.isEmpty()) {
+                if (deviceAppsLoading || rulesLoading) {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Text("正在加载应用和规则…", modifier = Modifier.padding(16.dp), fontSize = 14.sp)
+                    }
+                } else if (targets.isEmpty()) {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Text(
                             modifier = Modifier.padding(16.dp),
@@ -406,7 +423,7 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
                             RuleAppRow(
                                 app = appsByPackage.getValue(targetPackage),
                                 summary = "${rules.size} \u6761\u89c4\u5219 \u00b7 $hostCount \u4e2a\u57df\u540d \u00b7 $sourceCount \u4e2a\u53d1\u8d77\u7aef",
-                                onClick = { editingTarget = targetPackage }
+                                onClick = { if (!transferInProgress) { editorSaveError = null; editingTarget = targetPackage } }
                             )
                         }
                     }
@@ -415,7 +432,7 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
             }
             Card(
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 20.dp)
-                    .clickable { showTargetPicker = true }
+                    .clickable(enabled = !transferInProgress && !rulesLoading) { showTargetPicker = true }
             ) {
                 Text(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
@@ -433,10 +450,7 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
             existingTargets = targets.toSet(),
             onChoose = { target ->
                 showTargetPicker = false
-                if (drafts.none { it.targetPackage == target }) {
-                    // New targets start as global rules. The editor can narrow the source package.
-                    drafts = drafts + EditableRule(sourcePackage = "*", targetPackage = target)
-                }
+                editorSaveError = null
                 editingTarget = target
             },
             onDismiss = { showTargetPicker = false }
@@ -450,16 +464,42 @@ private fun RuleConfigPage(activity: RuleConfigActivity) {
             title = app?.label ?: targetToEdit,
             targetPackage = targetToEdit,
             initialRules = mergedRulesForTarget(drafts, effectiveEntries, targetToEdit),
+            saving = savingTarget,
+            saveError = editorSaveError,
             onConfirm = { rows ->
-                // A destination editor owns one target. Do not let an edit silently move a rule.
-                drafts = drafts.filterNot { it.targetPackage == targetToEdit } + rows.map {
-                    it.copy(targetPackage = targetToEdit)
+                savingTarget = true
+                editorSaveError = null
+                transferScope.launch {
+                    try {
+                        val result = withContext(Dispatchers.IO) {
+                            val edited = rows.flatMap { row ->
+                                val validated = RuleEditorValidation.validate(row.sourcePackage, targetToEdit,
+                                    row.hostsText, row.conversion, row.note)
+                                require(validated.isValid) { validated.errors.joinToString("；") }
+                                validated.entries
+                            }
+                            // Replace only this target in the latest persisted set, so an import or
+                            // another target saved since opening this dialog cannot be lost.
+                            val entries = RuleEditorValidation.replaceTarget(
+                                RuleConfigRepository.manualRuleEntriesForTransfer(activity), targetToEdit, edited
+                            )
+                            RuleEditorValidation.validateCapacity(entries)?.let { throw IllegalArgumentException(it) }
+                            RuleConfigRepository.saveSourceRules(activity, entries)
+                        }
+                        drafts = RuleConfigRepository.sourceRuleEntries(activity).map(EditableRule::from)
+                        savedVersion++
+                        editingTarget = null
+                        status = "已保存 ${rows.size} 条编辑规则，当前 ${result.effectiveHosts} 个生效域名"
+                    } catch (error: Throwable) {
+                        editorSaveError = "保存失败：${transferError(error)}"
+                    } finally { savingTarget = false }
                 }
-                editingTarget = null
             },
             onDismiss = { editingTarget = null }
         )
     }
+
+    if (showPreview) RulePreviewDialog(effectiveEntries, appsByPackage) { showPreview = false }
 
     if (showEffectiveRules) {
         EffectiveRulesDialog(
@@ -500,9 +540,10 @@ private fun TargetPickerDialog(
     loading: Boolean,
     existingTargets: Set<String>,
     onChoose: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    forSource: Boolean = false
 ) {
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
     val normalizedQuery = query.trim().lowercase(Locale.ROOT)
     val filteredApps = remember(apps, normalizedQuery) {
         if (normalizedQuery.isBlank()) apps else apps.filter { app ->
@@ -512,11 +553,11 @@ private fun TargetPickerDialog(
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("\u6dfb\u52a0\u76ee\u6807\u5e94\u7528") },
+        title = { Text(if (forSource) "选择发起应用" else "添加目标应用") },
         text = {
             Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "\u4ec5\u663e\u793a\u5f53\u524d\u8bbe\u5907\u5df2\u5b89\u88c5\u7684\u5e94\u7528\u3002\u9009\u62e9\u540e\u53ef\u4e3a\u8be5\u76ee\u6807\u5e94\u7528\u7f16\u8f91 IceBridge \u8df3\u8f6c\u89c4\u5219\u3002",
+                    if (forSource) "选择打开该链接的发起应用。" else "仅显示已安装应用；冻结的应用也可选择。",
                     fontSize = 13.sp,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                 )
@@ -569,20 +610,29 @@ private fun TargetRuleEditorDialog(
     title: String,
     targetPackage: String,
     initialRules: List<EditableRule>,
+    saving: Boolean,
+    saveError: String?,
     onConfirm: (List<EditableRule>) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var rows by remember(targetPackage) {
-        mutableStateOf(
-            if (initialRules.isEmpty()) {
-                listOf(EditableRule(sourcePackage = "*", targetPackage = targetPackage))
-            } else {
-                initialRules.map { it.copy(targetPackage = targetPackage) }
-            }
-        )
+    val originalRows = rememberSaveable(targetPackage, saver = EditableRulesSaver) {
+        if (initialRules.isEmpty()) listOf(EditableRule(sourcePackage = "*", targetPackage = targetPackage))
+        else initialRules.map { it.copy(targetPackage = targetPackage) }
     }
+    var rows by rememberSaveable(targetPackage, stateSaver = EditableRulesSaver) { mutableStateOf(originalRows) }
+    var attemptedSave by rememberSaveable(targetPackage) { mutableStateOf(false) }
+    var confirmDiscard by rememberSaveable(targetPackage) { mutableStateOf(false) }
+    val validations = remember(rows) {
+        rows.map { RuleEditorValidation.validate(it.sourcePackage, it.targetPackage, it.hostsText, it.conversion, it.note) }
+    }
+    fun requestDismiss() {
+        if (!saving) {
+            if (rows != originalRows) confirmDiscard = true else onDismiss()
+        }
+    }
+    BackHandler { requestDismiss() }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { requestDismiss() },
         title = { Text("\u7f16\u8f91$title") },
         text = {
             Column(
@@ -591,10 +641,12 @@ private fun TargetRuleEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    "\u6bcf\u6761\u89c4\u5219\u53ef\u6307\u5b9a\u53d1\u8d77\u7aef\u3001\u57df\u540d\u6216 HTTP(S) URL\u3002\u53d1\u8d77\u7aef\u586b\u5199 * \u8868\u793a\u4efb\u4f55\u5e94\u7528\uff1b\u76ee\u6807\u5e94\u7528\u56fa\u5b9a\u4e3a\u5f53\u524d\u9875\u9762\u3002",
+                    "发起应用填 * 表示通用规则。保存后立即生效；编辑在线规则会形成手动覆盖。删除手动覆盖后，对应在线规则仍可生效。",
                     fontSize = 13.sp,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                 )
+                if (rows != originalRows) Text("有未保存的修改", fontSize = 13.sp)
+                if (saveError != null) Text(saveError, color = Color(0xFFB3261E), fontSize = 13.sp)
                 rows.forEachIndexed { index, row ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(
@@ -602,10 +654,13 @@ private fun TargetRuleEditorDialog(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text("\u89c4\u5219 ${index + 1}", fontSize = 15.sp)
+                            if (attemptedSave) validations[index].errors.forEach { error ->
+                                Text(error, color = Color(0xFFB3261E), fontSize = 12.sp)
+                            }
                             TextField(
                                 value = row.sourcePackage,
                                 onValueChange = { value ->
-                                    rows = rows.replaceAt(index, row.copy(sourcePackage = value))
+                                    if (!saving) rows = rows.replaceAt(index, row.copy(sourcePackage = value))
                                 },
                                 label = "\u53d1\u8d77\u5e94\u7528\u5305\u540d\uff08* \u4e3a\u4efb\u610f\uff09",
                                 modifier = Modifier.fillMaxWidth(),
@@ -619,7 +674,7 @@ private fun TargetRuleEditorDialog(
                             TextField(
                                 value = row.hostsText,
                                 onValueChange = { value ->
-                                    rows = rows.replaceAt(index, row.copy(hostsText = value))
+                                    if (!saving) rows = rows.replaceAt(index, row.copy(hostsText = value))
                                 },
                                 label = "\u57df\u540d\u6216 HTTP(S) URL",
                                 modifier = Modifier.fillMaxWidth(),
@@ -633,7 +688,7 @@ private fun TargetRuleEditorDialog(
                                     fontSize = 13.sp,
                                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                                 )
-                                TextButton(onClick = {
+                                TextButton(enabled = !saving, onClick = {
                                     val conversion = if (row.conversion == LinkRuleEntry.CONVERSION_FIXED_DEEP_LINK) {
                                         LinkRuleEntry.CONVERSION_NONE
                                     } else {
@@ -645,25 +700,97 @@ private fun TargetRuleEditorDialog(
                             TextField(
                                 value = row.note,
                                 onValueChange = { value ->
-                                    rows = rows.replaceAt(index, row.copy(note = value))
+                                    if (!saving) rows = rows.replaceAt(index, row.copy(note = value))
                                 },
                                 label = "\u5907\u6ce8\uff08\u53ef\u9009\uff09",
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
-                            TextButton(onClick = {
+                            TextButton(enabled = !saving, onClick = {
                                 rows = rows.filterIndexed { rowIndex, _ -> rowIndex != index }
                             }) { Text("\u5220\u9664\u89c4\u5219") }
                         }
                     }
                 }
-                TextButton(onClick = {
+                TextButton(enabled = !saving, onClick = {
                     rows = rows + EditableRule(sourcePackage = "*", targetPackage = targetPackage)
                 }) { Text("+ \u6dfb\u52a0\u89c4\u5219") }
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(rows) }) { Text("\u4fdd\u5b58") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("\u53d6\u6d88") } }
+        confirmButton = { TextButton(enabled = !saving, onClick = {
+            attemptedSave = true
+            if (validations.all { it.isValid }) onConfirm(rows)
+        }) { Text(if (saving) "正在保存…" else "保存并生效") } },
+        dismissButton = { TextButton(enabled = !saving, onClick = { requestDismiss() }) { Text("取消") } }
+    )
+    if (confirmDiscard) AlertDialog(
+        onDismissRequest = { confirmDiscard = false },
+        title = { Text("放弃未保存的修改？") },
+        text = { Text("编辑内容尚未生效，离开后会丢弃这些修改。") },
+        confirmButton = { TextButton(onClick = { confirmDiscard = false; onDismiss() }) { Text("放弃修改") } },
+        dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("继续编辑") } }
+    )
+}
+
+@Composable
+private fun RulePreviewDialog(
+    entries: List<LinkRuleEntry>,
+    appsByPackage: Map<String, DeviceRuleApp>,
+    onDismiss: () -> Unit
+) {
+    var source by rememberSaveable { mutableStateOf("*") }
+    var url by rememberSaveable { mutableStateOf("") }
+    var showSourcePicker by rememberSaveable { mutableStateOf(false) }
+    var attempted by rememberSaveable { mutableStateOf(false) }
+    val preview = remember(source, url, entries, attempted) {
+        if (!attempted) null else runCatching {
+            val host = RuleEditorValidation.previewHost(source, url)
+            ScopedRuleResolver.matchingRules(entries, source.trim(), host)
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("测试链接规则") },
+        text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("预览已保存规则的匹配顺序；实际打开还取决于目标应用的冻结状态和系统解析结果。", fontSize = 13.sp)
+                TextField(value = source, onValueChange = { source = it },
+                    label = "发起应用包名（剪贴板填 *）", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TextButton(onClick = { showSourcePicker = true }) {
+                    Text(appsByPackage[source.trim()]?.let { "发起应用：${it.label}" } ?: "选择发起应用")
+                }
+                TextField(value = url, onValueChange = { url = it }, label = "HTTP(S) URL",
+                    modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4)
+                preview?.fold(onSuccess = { matches ->
+                    if (matches.isEmpty()) Text("没有匹配规则", fontSize = 14.sp)
+                    matches.forEachIndexed { index, rule ->
+                        val target = appsByPackage[rule.targetPackage]?.label ?: rule.targetPackage
+                        val origin = when (rule.source) {
+                            LinkRuleEntry.SOURCE_MANUAL -> "手动"
+                            LinkRuleEntry.SOURCE_ONLINE -> "在线"
+                            else -> "旧规则"
+                        }
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("${index + 1}. $target", fontSize = 15.sp)
+                                Text(rule.targetPackage, fontSize = 12.sp)
+                                Text("${rule.sourcePackage} → ${rule.host} · $origin", fontSize = 12.sp)
+                                Text(if (rule.hasFixedUrlConversion()) "转换：固定 Deep Link" else "转换：保留原 URL", fontSize = 12.sp)
+                                if (!appsByPackage.containsKey(rule.targetPackage)) Text("当前设备未检测到此应用", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }, onFailure = { error -> Text(error.message.orEmpty(), color = Color(0xFFB3261E), fontSize = 13.sp) })
+            }
+        },
+        confirmButton = { TextButton(onClick = { attempted = true }) { Text("查看匹配") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
+    if (showSourcePicker) TargetPickerDialog(
+        apps = appsByPackage.values.toList(), loading = false, existingTargets = emptySet(),
+        onChoose = { source = it; showSourcePicker = false },
+        onDismiss = { showSourcePicker = false }, forSource = true
     )
 }
 

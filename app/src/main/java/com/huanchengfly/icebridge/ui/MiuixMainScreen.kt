@@ -12,13 +12,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.huanchengfly.icebridge.activities.AboutActivity
 import com.huanchengfly.icebridge.activities.EnhanceModeActivity
 import com.huanchengfly.icebridge.activities.MainActivity
@@ -26,12 +31,20 @@ import com.huanchengfly.icebridge.activities.PermissionActivity
 import com.huanchengfly.icebridge.activities.RuleConfigActivity
 import com.huanchengfly.icebridge.engines.BaseEngine
 import com.huanchengfly.icebridge.engines.EngineManager
+import com.huanchengfly.icebridge.engines.IceBoxEngine
+import com.huanchengfly.icebridge.engines.RootEngine
+import com.huanchengfly.icebridge.engines.RootCommandRunner
 import com.huanchengfly.icebridge.utils.PackageUtil
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.extra.SuperArrow
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 object MiuixMainScreen {
     @JvmStatic
@@ -42,10 +55,76 @@ object MiuixMainScreen {
 
 @Composable
 private fun Home(activity: MainActivity) {
-    val engine = remember { EngineManager.getEngine(activity) }
     var refreshToken by remember { mutableIntStateOf(0) }
-    val status = remember(refreshToken) { engine.statusDescription?.toString().orEmpty() }
-    val statusLabel = when (engine.engineStatus) {
+    var foreground by remember { mutableStateOf(false) }
+    var checking by remember { mutableStateOf(true) }
+    var rootProbeRequested by remember { mutableStateOf(false) }
+    var rootNeedsCheck by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+    var engineStatus by remember { mutableIntStateOf(BaseEngine.STATUS_NOT_AVAILABLE) }
+    val requests = remember { RefreshGeneration() }
+    DisposableEffect(activity) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> { foreground = true; refreshToken++ }
+                Lifecycle.Event.ON_PAUSE -> { foreground = false; requests.invalidate() }
+                else -> Unit
+            }
+        }
+        activity.lifecycle.addObserver(observer)
+        foreground = activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        onDispose { requests.invalidate(); activity.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(activity, foreground, refreshToken) {
+        if (!foreground) return@LaunchedEffect
+        val request = requests.begin()
+        val probeRoot = rootProbeRequested
+        rootProbeRequested = false
+        checking = true
+        try {
+            // Re-select the engine after returning from service selection; never inspect providers
+            // from composition. The existing refresh methods already perform their work off-thread.
+            val engine = withContext(Dispatchers.IO) { EngineManager.getEngine(activity.applicationContext) }
+            suspendCancellableCoroutine<Unit> { continuation ->
+                val complete = Runnable { if (continuation.isActive) continuation.resume(Unit) }
+                when (engine) {
+                    is IceBoxEngine -> engine.refreshDiagnostic(complete)
+                    // A passive resume must not launch su, even when it used to be authorized:
+                    // permission could have been revoked and the resulting dialog resumes us again.
+                    is RootEngine -> if (probeRoot) engine.refreshStatus {
+                        complete.run()
+                        // A permission dialog can pause/cancel this coroutine. Once it completes,
+                        // schedule a passive reread of the current engine, never apply its old UI state.
+                        if (!activity.isDestroyed && !activity.isFinishing) refreshToken++
+                    } else complete.run()
+                    else -> complete.run()
+                }
+            }
+            val snapshot = withContext(Dispatchers.IO) {
+                val unknownRoot = engine is RootEngine && RootCommandRunner.getStatus() == RootCommandRunner.Status.UNKNOWN
+                val description = if (unknownRoot) "尚未检查 Root 授权；点击刷新状态或前往权限页检查"
+                else engine.statusDescription?.toString().orEmpty() +
+                    if (engine is RootEngine && !probeRoot) "\nRoot 状态来自上次检查，点击刷新重新检查" else ""
+                Triple(engine.engineStatus, description, unknownRoot)
+            }
+            if (requests.accepts(request)) {
+                engineStatus = snapshot.first
+                status = snapshot.second
+                rootNeedsCheck = snapshot.third
+                checking = false
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (requests.accepts(request)) {
+                engineStatus = BaseEngine.STATUS_NOT_AVAILABLE
+                rootNeedsCheck = false
+                status = "状态检查失败，请重试：${error.message ?: error.javaClass.simpleName}"
+                checking = false
+            }
+        }
+    }
+    val statusLabel = if (checking) "正在检查" else if (rootNeedsCheck) "待检查" else when (engineStatus) {
         BaseEngine.STATUS_WORKING -> "\u5df2\u5c31\u7eea"
         BaseEngine.STATUS_NEED_PERMISSION -> "\u9700\u8981\u6388\u6743"
         else -> "\u4e0d\u53ef\u7528"
@@ -59,7 +138,7 @@ private fun Home(activity: MainActivity) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Text(text = statusLabel, modifier = Modifier.padding(16.dp), fontSize = 20.sp)
                 Text(
-                    text = if (status.isBlank()) "\u6b63\u5728\u68c0\u67e5\u89e3\u51bb\u670d\u52a1\u72b6\u6001" else status,
+                    text = if (checking) "正在检查解冻服务状态" else status,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
                     fontSize = 14.sp,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary
@@ -88,7 +167,7 @@ private fun Home(activity: MainActivity) {
                 SuperArrow(
                     title = "\u5237\u65b0\u4e3b\u9875\u72b6\u6001",
                     summary = "\u91cd\u65b0\u8bfb\u53d6\u5f53\u524d\u89e3\u51bb\u670d\u52a1\u7684\u72b6\u6001",
-                    onClick = { refreshToken++ }
+                    onClick = { rootProbeRequested = true; refreshToken++ }
                 )
                 SuperArrow(
                     title = "\u5173\u4e8e",

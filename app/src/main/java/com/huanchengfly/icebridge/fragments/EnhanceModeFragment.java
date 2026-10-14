@@ -62,6 +62,7 @@ public class EnhanceModeFragment extends PreferencesFragment {
                 new AppConfig(SystemServerConfigContract.KEY_PAYMENT_SDK_BRIDGE, "0")
                         .saveOrUpdate("key = ?", SystemServerConfigContract.KEY_PAYMENT_SDK_BRIDGE);
             }
+            SystemServerConfigContract.notifyChanged(getAttachContext());
             return true;
         });
         autoOpenPreference.setOnPreferenceChangeListener((preference, newValue) -> {
@@ -73,6 +74,7 @@ public class EnhanceModeFragment extends PreferencesFragment {
             }
             new AppConfig(SystemServerConfigContract.KEY_AUTO_OPEN_LINKS, enabled ? "1" : "0")
                     .saveOrUpdate("key = ?", SystemServerConfigContract.KEY_AUTO_OPEN_LINKS);
+            SystemServerConfigContract.notifyChanged(getAttachContext());
             return true;
         });
         nativeLinkCapturePreference.setOnPreferenceChangeListener((preference, newValue) -> {
@@ -89,6 +91,7 @@ public class EnhanceModeFragment extends PreferencesFragment {
             }
             new AppConfig(SystemServerConfigContract.KEY_NATIVE_LINK_CAPTURE, enabled ? "1" : "0")
                     .saveOrUpdate("key = ?", SystemServerConfigContract.KEY_NATIVE_LINK_CAPTURE);
+            SystemServerConfigContract.notifyChanged(getAttachContext());
             return true;
         });
         paymentSdkBridgePreference.setOnPreferenceChangeListener((preference, newValue) -> {
@@ -105,6 +108,7 @@ public class EnhanceModeFragment extends PreferencesFragment {
             }
             new AppConfig(SystemServerConfigContract.KEY_PAYMENT_SDK_BRIDGE, enabled ? "1" : "0")
                     .saveOrUpdate("key = ?", SystemServerConfigContract.KEY_PAYMENT_SDK_BRIDGE);
+            SystemServerConfigContract.notifyChanged(getAttachContext());
             return true;
         });
         hideFromRecentsPreference.setOnPreferenceChangeListener((preference, newValue) -> {
@@ -133,11 +137,13 @@ public class EnhanceModeFragment extends PreferencesFragment {
         debugLoggingPreference.setOnPreferenceChangeListener((preference, newValue) -> {
             new AppConfig("module_debug_logging", (boolean) newValue ? "1" : "0")
                     .saveOrUpdate("key = ?", "module_debug_logging");
+            SystemServerConfigContract.notifyChanged(getAttachContext());
             return true;
         });
         enhancePreference.setOnPreferenceChangeListener((preference, newValue) -> {
             boolean enabled = (boolean) newValue;
             new AppConfig("enhance_mode_enabled", enabled ? "1" : "0").saveOrUpdate("key = ?", "enhance_mode_enabled");
+            SystemServerConfigContract.notifyChanged(getAttachContext());
             refreshStatus();
             return true;
         });

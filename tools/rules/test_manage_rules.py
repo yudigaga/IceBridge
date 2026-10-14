@@ -54,6 +54,67 @@ class RuleMaintenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "768 rules"):
             rules.validate_document(document)
 
+    def test_exact_utf8_byte_limit_includes_canonical_encoding(self):
+        document = snapshot()
+        document["provenance"] = {"padding": ""}
+        remaining = rules.MAX_BUNDLE_BYTES - len(rules.encode(document))
+        document["provenance"]["padding"] = "x" * remaining
+        self.assertEqual(rules.MAX_BUNDLE_BYTES, len(rules.encode(document)))
+        self.assertIs(document, rules.validate_document(document))
+        document["provenance"]["padding"] += "x"
+        with self.assertRaisesRegex(ValueError, "1048576 UTF-8 bytes"):
+            rules.validate_document(document)
+
+    def test_individually_valid_unicode_rules_cannot_exceed_bundle_byte_limit(self):
+        document = snapshot()
+        document["rules"] = [
+            {"sourcePackage": "p." + "x" * 240 + f"{index:013d}", "host": "example.com",
+             "package": "q." + "y" * 253, "conversion": "none", "note": "🌊" * 256}
+            for index in range(768)]
+        self.assertGreater(len(rules.encode(document)), rules.MAX_BUNDLE_BYTES)
+        with self.assertRaisesRegex(ValueError, "UTF-8 bytes"):
+            rules.validate_document(document)
+
+    def test_provenance_depth_matches_client_root_at_zero(self):
+        document = snapshot()
+        current = document["provenance"] = {}
+        # Provenance is depth 1; the deepest empty object here is exactly depth 16.
+        for unused in range(15):
+            current["child"] = {}
+            current = current["child"]
+        self.assertIs(document, rules.validate_document(document))
+        current["child"] = {}
+        with self.assertRaisesRegex(ValueError, "JSON depth 16"):
+            rules.validate_document(document)
+
+    def test_json_node_limit_counts_containers_and_values_but_not_keys(self):
+        document = snapshot()
+        document["rules"] = []
+        # root, format, version, revision, rules, provenance, values = 7 nodes.
+        document["provenance"] = {"values": [None] * (rules.MAX_JSON_NODES - 7)}
+        self.assertIs(document, rules.validate_document(document))
+        document["provenance"]["values"].append(None)
+        with self.assertRaisesRegex(ValueError, "16000 JSON nodes"):
+            rules.validate_document(document)
+
+    def test_nonfinite_provenance_numbers_are_never_published(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            document = snapshot()
+            document["provenance"] = {"number": value}
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                rules.validate_document(document)
+
+    def test_failed_wire_validation_does_not_create_publication_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source, output = directory / "rules.json", directory / "public"
+            document = snapshot()
+            document["provenance"] = {"padding": "x" * rules.MAX_BUNDLE_BYTES}
+            source.write_bytes(rules.encode(document))
+            with self.assertRaisesRegex(ValueError, "UTF-8 bytes"):
+                rules.build(source, output)
+            self.assertFalse(output.exists())
+
     def test_build_immutable_and_full_replacement(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

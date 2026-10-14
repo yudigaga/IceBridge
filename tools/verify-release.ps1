@@ -1,11 +1,18 @@
 param(
     [Parameter(Mandatory = $true)]
     [string] $Apk,
-    [string] $ExpectedVersion = "0.0.79",
-    [string] $ExpectedCertificateSha256 = ""
+    [string] $ExpectedVersion = "",
+    [string] $ExpectedCertificateSha256 = "",
+    [switch] $AllowUnpinnedCertificate
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'release-validation.ps1')
+$releaseVersion = Read-ReleaseVersion (Join-Path $PSScriptRoot '../version.properties')
+if (-not $ExpectedVersion) { $ExpectedVersion = $releaseVersion.versionName }
+if (-not $ExpectedCertificateSha256 -and -not $AllowUnpinnedCertificate) {
+    throw 'Provide ExpectedCertificateSha256 for release identity; AllowUnpinnedCertificate is for CI test keys only.'
+}
 
 function Require-Tool([string] $Name) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -24,11 +31,14 @@ Write-Host "APK: $apkPath"
 $badging = (& $aapt2 dump badging $apkPath | Out-String)
 if ($LASTEXITCODE -ne 0) { throw "aapt2 dump badging failed" }
 
-if ($badging -notmatch "package: name='io\.github\.yudigaga\.icebridge'") {
+if ($badging -notmatch ("package: name='" + [regex]::Escape($releaseVersion.applicationId) + "'")) {
     throw "Unexpected applicationId"
 }
 if ($badging -notmatch ("versionName='" + [regex]::Escape($ExpectedVersion) + "'")) {
     throw "Unexpected versionName; expected $ExpectedVersion"
+}
+if ($badging -notmatch ("versionCode='" + [regex]::Escape($releaseVersion.versionCode) + "'")) {
+    throw 'Unexpected versionCode'
 }
 if ($badging -match "application-debuggable") {
     throw "Release APK is debuggable"
@@ -36,11 +46,10 @@ if ($badging -match "application-debuggable") {
 
 $certOutput = (& $apksigner verify --verbose --print-certs $apkPath | Out-String)
 if ($LASTEXITCODE -ne 0) { throw "apksigner verification failed" }
-if ($certOutput -notmatch "Verified using v2 scheme") {
+if (-not (Test-ApkV2Signature $certOutput)) {
     throw "APK is not verified with APK Signature Scheme v2"
 }
-if ($ExpectedCertificateSha256 -and
-    $certOutput -notmatch [regex]::Escape($ExpectedCertificateSha256)) {
+if ($ExpectedCertificateSha256 -and -not (Test-ApkCertificate $certOutput $ExpectedCertificateSha256)) {
     throw "Certificate SHA-256 does not match expected value"
 }
 
@@ -51,12 +60,20 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [System.IO.Compression.ZipFile]::OpenRead($apkPath)
 try {
     $forbidden = $archive.Entries | Where-Object {
-        $_.FullName -match "(^|/)(debug|\\.debug|\\.git)(/|$)" -or
-        $_.FullName -match "(^|/)(R\\.txt|mapping\\.txt)$"
+        Test-ForbiddenApkEntry $_.FullName
     }
     if ($forbidden) {
         throw "APK contains forbidden debug/build metadata: " +
             (($forbidden | ForEach-Object { $_.FullName }) -join ", ")
+    }
+    $entry = $archive.GetEntry('META-INF/xposed/module.prop')
+    if ($null -eq $entry) { throw 'LSPosed module metadata missing' }
+    $reader = [System.IO.StreamReader]::new($entry.Open())
+    try { $moduleMetadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    foreach ($pair in @(@('id', $releaseVersion.applicationId), @('version', $ExpectedVersion), @('versionCode', $releaseVersion.versionCode))) {
+        if ($moduleMetadata -notmatch ('(?m)^' + $pair[0] + '=' + [regex]::Escape($pair[1]) + '\r?$')) {
+            throw "LSPosed metadata mismatch: $($pair[0])"
+        }
     }
 } finally {
     $archive.Dispose()

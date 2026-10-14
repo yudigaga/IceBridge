@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat;
 import com.catchingnow.icebox.sdk_client.IceBox;
 import com.catchingnow.icebox.sdk_client.IceBoxDiagnostic;
 import com.huanchengfly.icebridge.R;
+import com.huanchengfly.icebridge.SystemServerConfigContract;
 import com.huanchengfly.icebridge.utils.Util;
 
 import java.util.concurrent.ExecutorService;
@@ -41,6 +42,7 @@ public final class IceBoxEngine extends BaseEngine {
         EXECUTOR.execute(() -> {
             try {
                 IceBox.setAppEnabledSettings(context, enabled, packageName);
+                SystemServerConfigContract.notifyChanged(context);
                 MAIN_HANDLER.post(callback::onSuccess);
             } catch (RuntimeException error) {
                 MAIN_HANDLER.post(callback::onFailure);

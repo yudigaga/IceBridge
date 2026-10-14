@@ -14,6 +14,21 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate rule publication and release checks
+        shell: pwsh
+        run: |
+          python tools/rules/manage_rules.py validate
+          if ($LASTEXITCODE -ne 0) { throw 'Rule validation failed' }
+          python tools/rules/manage_rules.py build
+          if ($LASTEXITCODE -ne 0) { throw 'Rule build failed' }
+          python -m unittest discover -s tools/rules -p 'test_*.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Rule tool tests failed' }
+          $ruleChanges = git status --porcelain --untracked-files=all -- online-rules
+          if ($LASTEXITCODE -ne 0 -or $ruleChanges) { throw 'Generated rule publication is stale or untracked' }
+          & .\tools\test-release-validation.ps1
       - name: Install Android build tools
         shell: pwsh
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
@@ -30,8 +45,10 @@ jobs:
             -keysize 2048 `
             -validity 3650 `
             -dname "CN=IceBridge CI, OU=CI, O=IceBridge, C=US"
+          if ($LASTEXITCODE -ne 0) { throw 'CI signing key generation failed' }
+          $keystoreForProperties = $keystore.Replace('\', '/')
           @"
-          storeFile=$keystore
+          storeFile=$keystoreForProperties
           storePassword=changeit
           keyAlias=ci-release
           keyPassword=changeit
@@ -41,13 +58,22 @@ jobs:
         run: |
           $buildTools = Join-Path $env:ANDROID_HOME "build-tools\34.0.0"
           $env:Path = "$buildTools;$env:Path"
-          .\gradlew.bat test lintDebug assembleRelease --stacktrace
+          .\gradlew.bat test lintDebug assembleRelease assembleDebugAndroidTest --stacktrace
+          if ($LASTEXITCODE -ne 0) { throw 'Android verification failed' }
       - name: Verify release package
         shell: pwsh
         run: |
           $buildTools = Join-Path $env:ANDROID_HOME "build-tools\34.0.0"
           $env:Path = "$buildTools;$env:Path"
-          $apk = Get-ChildItem -Recurse -Filter "IceBridge-v0.0.79-release.apk" |
-            Select-Object -First 1
-          if ($null -eq $apk) { throw "Release APK not found" }
-          & .\tools\verify-release.ps1 -Apk $apk.FullName
+          $apks = @(Get-ChildItem app/build/outputs/apk/release -Filter '*-release.apk')
+          if ($apks.Count -ne 1) { throw 'Expected exactly one release APK' }
+          & .\tools\verify-release.ps1 -Apk $apks[0].FullName -AllowUnpinnedCertificate
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-verification
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore

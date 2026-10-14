@@ -14,6 +14,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import com.huanchengfly.icebridge.automation.FluidCloudRuleCatalog;
 
 /**
  * Executes the small set of commands required by RootEngine without depending on RootTools.
@@ -83,26 +84,49 @@ public final class RootCommandRunner {
         });
     }
 
-    public static void setPackageEnabled(String packageName, boolean enabled, Callback callback) {
-        if (!isValidPackageName(packageName)) {
+    public static void setPackageEnabled(String packageName, boolean enabled, int userId, Callback callback) {
+        String command = packageStateCommand(packageName, enabled, userId);
+        if (command == null) {
             completeFailure(callback);
             return;
         }
-        String command = enabled
-                ? "pm enable " + packageName + " && pm unhide " + packageName
-                : "pm disable-user " + packageName;
         executeCommand(command, callback);
     }
 
+    static String packageStateCommand(String packageName, boolean enabled, int userId) {
+        if (!isValidPackageName(packageName) || !isValidUserId(userId)) return null;
+        String target = " --user " + userId + " " + packageName;
+        return enabled ? "pm enable" + target + " && pm unhide" + target : "pm disable-user" + target;
+    }
+
     public static void startViewAsUser(Uri uri, String targetPackage, int userId, Callback callback) {
-        if (!isValidWebUri(uri) || !isValidPackageName(targetPackage)
-                || !isValidUserId(userId)) {
+        startViewAsUser(uri, targetPackage, userId, false, callback);
+    }
+
+    /** Accepts original web URLs only; custom schemes can only be produced by our reviewed catalog. */
+    public static void startViewAsUser(Uri originalHttpUri, String targetPackage, int userId,
+                                       boolean fixedConversion, Callback callback) {
+        String command = viewCommand(originalHttpUri == null ? null : originalHttpUri.toString(),
+                targetPackage, userId, fixedConversion,
+                (source, target) -> FluidCloudRuleCatalog.rewriteForTarget(Uri.parse(source), target).toString());
+        if (command == null) {
             completeFailure(callback);
             return;
         }
-        String command = "am start --user " + userId + " -a android.intent.action.VIEW -d "
-                + shellQuote(uri.toString()) + " -p " + shellQuote(targetPackage);
         executeCommand(command, callback);
+    }
+
+    interface FixedLinkConverter { String convert(String source, String target); }
+
+    static String viewCommand(String originalHttpUrl, String targetPackage, int userId,
+                              boolean fixedConversion, FixedLinkConverter converter) {
+        if (!isValidWebUrl(originalHttpUrl) || originalHttpUrl.length() > 8192
+                || !isValidPackageName(targetPackage) || !isValidUserId(userId)) return null;
+        String launchUrl = fixedConversion ? converter.convert(originalHttpUrl, targetPackage) : originalHttpUrl;
+        if (launchUrl == null || launchUrl.isEmpty() || launchUrl.length() > 32768
+                || launchUrl.indexOf('\0') >= 0 || launchUrl.indexOf('\r') >= 0 || launchUrl.indexOf('\n') >= 0) return null;
+        return "am start --user " + userId + " -a android.intent.action.VIEW -d "
+                + shellQuote(launchUrl) + " -p " + shellQuote(targetPackage);
     }
 
     private static void executeCommand(String command, Callback callback) {
@@ -256,7 +280,7 @@ public final class RootCommandRunner {
     }
 
     private static String shellQuote(String value) {
-        return "'" + value.replace("'", "'\\\"'\\\"'") + "'";
+        return "'" + value.replace("'", "'\"'\"'") + "'";
     }
 
     private static void destroyProcess(Process process) {

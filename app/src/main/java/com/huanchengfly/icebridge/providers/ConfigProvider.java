@@ -6,6 +6,10 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.BroadcastReceiver;
+import android.content.SharedPreferences;
 import android.content.UriMatcher;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
@@ -21,6 +25,7 @@ import androidx.annotation.Nullable;
 import com.huanchengfly.icebridge.SystemServerConfigContract;
 import com.huanchengfly.icebridge.automation.LinkAutomationConfig;
 import com.huanchengfly.icebridge.automation.RuleConfigRepository;
+import com.huanchengfly.icebridge.automation.LinkRuleEntry;
 import com.huanchengfly.icebridge.databases.AppConfig;
 
 import org.litepal.LitePal;
@@ -42,6 +47,12 @@ public class ConfigProvider extends ContentProvider {
     public static final Uri URI = Uri.parse("content://" + AUTHORITY + "/config");
     private static final int MATCH_CODE = 200;
     private static UriMatcher uriMatcher;
+    private final SharedPreferences.OnSharedPreferenceChangeListener preferencesChanged = (preferences, key) -> {
+        if (key == null || !key.startsWith("rule_config_effective")) notifyChange();
+    };
+    private final BroadcastReceiver packagesChanged = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) { notifyChange(); }
+    };
     // HyperOS may deny full package enumeration even with QUERY_ALL_PACKAGES. These are the
     // high-confidence link targets handled by the module and can be queried one package at a time.
     private static final String[] LINK_TARGET_CANDIDATES = {
@@ -56,11 +67,23 @@ public class ConfigProvider extends ContentProvider {
     }
 
     private void notifyChange() {
-        getContext().getContentResolver().notifyChange(URI, null);
+        SystemServerConfigContract.notifyChanged(getContext());
     }
 
     @Override
     public boolean onCreate() {
+        Context context = getContext();
+        if (context != null) {
+            context.getSharedPreferences(LinkAutomationConfig.PREFS, Context.MODE_PRIVATE)
+                    .registerOnSharedPreferenceChangeListener(preferencesChanged);
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_PACKAGE_ADDED);
+            filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+            filter.addAction(Intent.ACTION_PACKAGE_CHANGED);
+            filter.addDataScheme("package");
+            if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(packagesChanged, filter, Context.RECEIVER_NOT_EXPORTED);
+            else context.registerReceiver(packagesChanged, filter);
+        }
         return true;
     }
 
@@ -90,6 +113,7 @@ public class ConfigProvider extends ContentProvider {
         }
         Bundle snapshot = new Bundle();
         snapshot.putInt(SystemServerConfigContract.KEY_SCHEMA_VERSION, SystemServerConfigContract.SCHEMA_VERSION);
+        snapshot.putInt(SystemServerConfigContract.KEY_USER_ID, SystemServerConfigContract.currentUserId());
         try {
             // Read one database snapshot instead of issuing one query per switch. This reduces
             // startup Binder latency and prevents a config refresh from observing mixed values
@@ -103,6 +127,7 @@ public class ConfigProvider extends ContentProvider {
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_XHS_RECOVERY,
                     configEnabled(configValues, SystemServerConfigContract.KEY_XHS_RECOVERY, false)
+                            && configEnabled(configValues, "enhance_mode_enabled", true)
             );
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_AUTO_OPEN_LINKS,
@@ -162,7 +187,11 @@ public class ConfigProvider extends ContentProvider {
         // A denied enumeration must not turn the whole snapshot into an empty set on HyperOS.
         // Single-package queries avoid the MIUI getInstalledApplications restriction.
         if (!enumerationSucceeded) {
-            for (String packageName : LINK_TARGET_CANDIDATES) {
+            Set<String> fallbackCandidates = new HashSet<>(Arrays.asList(LINK_TARGET_CANDIDATES));
+            for (LinkRuleEntry entry : RuleConfigRepository.effectiveRuleEntries(context)) {
+                fallbackCandidates.add(entry.targetPackage);
+            }
+            for (String packageName : fallbackCandidates) {
                 try {
                     int singleFlags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
                             ? PackageManager.MATCH_UNINSTALLED_PACKAGES | PackageManager.MATCH_DISABLED_COMPONENTS

@@ -24,10 +24,33 @@ HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-
 COMMIT = re.compile(r"[0-9a-f]{40}")
 CONVERSIONS = {"none", "fixed_deep_link"}
 MAX_REVISION = (1 << 63) - 1
+MAX_BUNDLE_BYTES = 1024 * 1024
+MAX_JSON_DEPTH = 16
+MAX_JSON_NODES = 16000
 
 
 def encode(value):
-    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    return (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
+
+
+def validate_wire_limits(document):
+    """Match OnlineRuleBundle's UTF-8 size and strict-reader aggregate bounds."""
+    pending = [(document, 0)]
+    count = 0
+    while pending:
+        value, depth = pending.pop()
+        count += 1
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError(f"snapshot exceeds JSON depth {MAX_JSON_DEPTH}")
+        if count > MAX_JSON_NODES:
+            raise ValueError(f"snapshot exceeds {MAX_JSON_NODES} JSON nodes")
+        if isinstance(value, dict):
+            pending.extend((child, depth + 1) for child in value.values())
+        elif isinstance(value, list):
+            pending.extend((child, depth + 1) for child in value)
+    # These are the exact canonical bytes build() publishes, including whitespace and newline.
+    if len(encode(document)) > MAX_BUNDLE_BYTES:
+        raise ValueError(f"snapshot exceeds {MAX_BUNDLE_BYTES} UTF-8 bytes")
 
 
 def read_json(path):
@@ -110,6 +133,7 @@ def validate_document(document):
         hosts.add(rule["host"])
     if len(hosts) > 96:
         raise ValueError("more than 96 distinct hosts; review the candidate instead of silently truncating it")
+    validate_wire_limits(document)
     return document
 
 

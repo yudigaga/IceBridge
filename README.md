@@ -13,9 +13,23 @@ WeChat / QQ built-in browser activity -> system-side IceBridge observation extra
 -> IceBridge opens the original URL in that target app
 ```
 
-Supported built-in HTTPS hosts include Xiaohongshu, Weibo, Zhihu, Alipay, X/Twitter, YouTube, Instagram, and Telegram. Additional mappings can be entered in Settings as `domain.example=com.example.app`.
+HTTP(S) mappings come from manual rules and the project's [owned online rule feed](https://raw.githubusercontent.com/yudigaga/IceBridge/rules/manifest.json). In the rule editor, select the source application, domain and target application; `*` matches any source. Clipboard routing uses wildcard rules only.
 
-For setup and the recommended LSPosed scope, see `docs/NATIVE_LINK_CAPTURE.md`. The default scope is `system` only; no WeChat, QQ, browser, or target-app scope is required for the system and clipboard paths. The optional WebView observer can only run in a host process that the user explicitly adds to LSPosed scope, and it hooks only the framework `android.webkit.WebView.loadUrl` API.
+For setup and the recommended LSPosed scope, see [native link capture](docs/NATIVE_LINK_CAPTURE.md). The default scope is `system` only; no WeChat, QQ, browser, or target-app scope is required. System-side capture observes Activity requests and does not provide visibility into every in-process WebView navigation.
+
+## Maintain online rules
+
+The initial snapshot extracts the supported declarative subset of `nyehueh/shortx-Fluid_Cloud` into an independently maintained feed. It contains 32 mappings over 22 hosts at revision 1. No upstream scripts are executed or published. [Maintenance instructions and provenance](online-rules/README.md) explain the excluded formats and how to review future upstream candidates.
+
+Edit `online-rules/rules.json`, increment `revision`, then validate and build the complete snapshot:
+
+```text
+python tools/rules/manage_rules.py validate
+python tools/rules/manage_rules.py build
+python -m unittest discover -s tools/rules -p "test_*.py"
+```
+
+The client verifies the manifest, checksum and revision, retains a validated backup on failure, and permits rule removal through a newer complete snapshot. GitHub is preferred, with a same-repository jsDelivr fallback. After merging reviewed rule changes, run the **Publish owned online rules** workflow on the default branch, or follow the documented subtree command. Publishing updates only the `rules` branch.
 
 ## Package name change in v0.0.79
 
@@ -26,7 +40,17 @@ The application ID is now `io.github.yudigaga.icebridge`, which meets the LSPose
 ```text
 ./gradlew test
 ./gradlew assembleDebug
+./gradlew lintDebug assembleRelease assembleDebugAndroidTest
 ```
 
-The debug APK is written to `app/build79/outputs/apk/debug/IceBridge-v0.0.79-debug.apk`.
+Version name, code and application ID are defined in `version.properties`. Gradle generates matching LSPosed metadata and APK names. Outputs are under `app/build/outputs/apk/`; instrumentation APK compilation does not replace running tests on a device.
+
+For a production release, verify the expected signing identity using Android build tools on PATH:
+
+```powershell
+./tools/test-release-validation.ps1
+./tools/verify-release.ps1 -Apk app/build/outputs/apk/release/IceBridge-v0.0.80-release.apk -ExpectedCertificateSha256 $env:ICEBRIDGE_RELEASE_CERT_SHA256
+```
+
+`-AllowUnpinnedCertificate` is reserved for the disposable CI test key. Device-only checks and the current validation scope are recorded in [the release checklist](docs/RELEASE_VALIDATION.md).
 

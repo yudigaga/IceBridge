@@ -6,6 +6,8 @@ import android.text.TextUtils;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.huanchengfly.icebridge.providers.ConfigProvider;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -15,6 +17,8 @@ import java.io.IOException;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -22,8 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -32,13 +35,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
 import okhttp3.HttpUrl;
+import okhttp3.Call;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 
 /**
- * Downloads only the declarative host-to-package subset of the Fluid Cloud repository.
- * It never interprets ShortX JavaScript/MVEL actions, Activities, intent flags, or any shell code.
+ * Downloads the owner's versioned declarative rule bundle. The former third-party host cache
+ * is only a migration fallback until the first owned-source snapshot has been committed.
  */
 public final class OnlineLinkRuleRepository {
     public interface Callback {
@@ -54,32 +58,23 @@ public final class OnlineLinkRuleRepository {
     private static final String KEY_UPDATED_AT = "online_link_rule_updated_at";
     private static final String KEY_LAST_STATUS = "online_link_rule_last_status";
     private static final String KEY_LAST_SOURCE = "online_link_rule_last_source";
+    private static final String KEY_OWNED_RULES = "online_owned_rules_v1";
+    private static final String KEY_OWNED_HASH = "online_owned_rules_sha256";
+    private static final String KEY_OWNED_BACKUP = "online_owned_rules_backup_v1";
+    private static final String KEY_OWNED_BACKUP_HASH = "online_owned_rules_backup_sha256";
+    private static final String KEY_HIGHEST_REVISION = "online_owned_rules_highest_revision";
+    private static final String KEY_HIGHEST_HASH = "online_owned_rules_highest_sha256";
+    private static final String KEY_MIGRATED = "online_owned_rules_migrated";
+    private static final String KEY_FAILURE_COUNT = "online_rule_failure_count";
+    private static final String KEY_RETRY_AT = "online_rule_retry_at";
     private static final long UPDATE_INTERVAL_MILLIS = TimeUnit.DAYS.toMillis(7);
-    private static final int MAX_RULE_FILES = 64;
-    private static final int MAX_RULE_FILE_BYTES = 8 * 1024;
-    private static final int MAX_INDEX_BYTES = 512 * 1024;
+    private static final long REFRESH_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(30);
     private static final int MAX_HOSTS = 96;
-    // Do not follow a mutable branch from system-facing automation. Update this revision only
-    // after reviewing the declarative rule changes and their resulting checksums.
-    private static final String RULE_SOURCE_REVISION =
-            "c343298036121b3841e7d16024e68317ba63c541";
-    /** Official GitHub is preferred; jsDelivr is a fixed CDN fallback for networks that cannot reach GitHub directly. */
-    private static final RuleSource[] SOURCES = {
-            new RuleSource(
-                    "GitHub",
-                    "https://api.github.com/repos/nyehueh/shortx-Fluid_Cloud/git/trees/"
-                            + RULE_SOURCE_REVISION + "?recursive=1",
-                    "https://raw.githubusercontent.com/nyehueh/shortx-Fluid_Cloud/"
-                            + RULE_SOURCE_REVISION + "/",
-                    RuleSource.TreeFormat.GITHUB),
-            new RuleSource(
-                    "jsDelivr",
-                    "https://data.jsdelivr.com/v1/package/gh/nyehueh/shortx-Fluid_Cloud@"
-                            + RULE_SOURCE_REVISION,
-                    "https://cdn.jsdelivr.net/gh/nyehueh/shortx-Fluid_Cloud@"
-                            + RULE_SOURCE_REVISION + "/",
-                    RuleSource.TreeFormat.JSDELIVR)
-    };
+    private static final String SOURCE_NAME = "自有规则 yudigaga/IceBridge";
+    private static final HttpUrl MANIFEST_URL = HttpUrl.parse(
+            "https://raw.githubusercontent.com/yudigaga/IceBridge/rules/manifest.json");
+    private static final HttpUrl FALLBACK_MANIFEST_URL = HttpUrl.parse(
+            "https://cdn.jsdelivr.net/gh/yudigaga/IceBridge@rules/manifest.json");
     private static final Pattern PACKAGE_PATTERN = Pattern.compile("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+");
     private static final Pattern HOST_PATTERN = Pattern.compile("[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+");
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> new Thread(r, "IceBridge-online-rules"));
@@ -89,10 +84,14 @@ public final class OnlineLinkRuleRepository {
      * completion callback when startup refresh and a manual refresh overlap. */
     private static final List<Callback> WAITING_CALLBACKS = new ArrayList<>();
     private static final Object CALLBACK_LOCK = new Object();
+    private static final Object CACHE_LOCK = new Object();
+    private static volatile OwnedCacheSnapshot lastOwnedCache;
     private static final OkHttpClient CLIENT = new OkHttpClient.Builder()
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-            .callTimeout(45, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
             .build();
 
     private OnlineLinkRuleRepository() {
@@ -100,7 +99,11 @@ public final class OnlineLinkRuleRepository {
 
     public static void maybeRefreshAsync(Context context) {
         Context app = app(context);
-        if (app == null || !isEnabled(app) || System.currentTimeMillis() - lastUpdatedAt(app) < UPDATE_INTERVAL_MILLIS) {
+        if (app == null || !isEnabled(app)) return;
+        long now = System.currentTimeMillis();
+        SharedPreferences preferences = prefs(app);
+        if (!shouldRefresh(now, preferences.getLong(KEY_UPDATED_AT, 0L),
+                preferences.getLong(KEY_RETRY_AT, 0L), readOwnedRules(preferences))) {
             return;
         }
         refreshAsync(app, null);
@@ -124,25 +127,25 @@ public final class OnlineLinkRuleRepository {
                 Result result;
                 try {
                     try {
-                        DownloadResult downloaded = downloadRules();
-                        if (downloaded.rules.isEmpty()) {
-                            result = Result.failure("\u672a\u83b7\u53d6\u5230\u53ef\u7528\u7684\u5b89\u5168\u89c4\u5219\uff1b\u5df2\u7ee7\u7eed\u4f7f\u7528\u7f13\u5b58\u6216\u624b\u52a8\u89c4\u5219");
-                        } else {
-                            int mergedCount = mergeAndSaveRules(app, downloaded.rules);
-                            result = Result.success(mergedCount, System.currentTimeMillis(), downloaded.sourceName);
-                        }
+                        OnlineRuleBundle downloaded = downloadRules(prefs(app));
+                        long updatedAt = System.currentTimeMillis();
+                        result = Result.success(downloaded.rules.size(), updatedAt,
+                                SOURCE_NAME + " · revision " + downloaded.revision);
+                        saveOwnedRules(app, downloaded, result);
                     } catch (IOException error) {
-                        result = Result.failure("\u5728\u7ebf\u89c4\u5219\u66f4\u65b0\u5931\u8d25\uff1a\u65e0\u6cd5\u8fde\u63a5\u66f4\u65b0\u6e90\uff1b\u5df2\u7ee7\u7eed\u4f7f\u7528\u7f13\u5b58\u6216\u624b\u52a8\u89c4\u5219");
+                        result = Result.failure("自有在线规则下载或校验失败；继续使用可用缓存或手动规则");
                     } catch (Throwable error) {
                         result = Result.failure("\u89c4\u5219\u6821\u9a8c\u5931\u8d25\uff1b\u5df2\u7ee7\u7eed\u4f7f\u7528\u7f13\u5b58\u6216\u624b\u52a8\u89c4\u5219");
                     }
                     try {
-                        SharedPreferences.Editor editor = prefs(app).edit().putString(KEY_LAST_STATUS, result.message);
-                        if (result.updatedAt > 0L) {
-                            editor.putLong(KEY_UPDATED_AT, result.updatedAt);
-                            editor.putString(KEY_LAST_SOURCE, result.sourceName);
+                        if (!result.success) {
+                            SharedPreferences preferences = prefs(app);
+                            int failures = Math.min(6, Math.max(0, preferences.getInt(KEY_FAILURE_COUNT, 0)) + 1);
+                            preferences.edit().putString(KEY_LAST_STATUS, result.message)
+                                    .putInt(KEY_FAILURE_COUNT, failures)
+                                    .putLong(KEY_RETRY_AT, System.currentTimeMillis() + retryDelayMillis(failures))
+                                    .apply();
                         }
-                        editor.apply();
                     } catch (Throwable error) {
                         result = Result.failure("\u89c4\u5219\u72b6\u6001\u4fdd\u5b58\u5931\u8d25");
                     }
@@ -181,9 +184,35 @@ public final class OnlineLinkRuleRepository {
 
     /** Ordered online candidates that have passed strict declarative parsing. */
     public static Map<String, List<String>> hostCandidates(Context context) {
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        for (LinkRuleEntry entry : ruleEntries(context)) {
+            List<String> packages = result.get(entry.host);
+            if (packages == null) { packages = new ArrayList<>(); result.put(entry.host, packages); }
+            if (!packages.contains(entry.targetPackage)) packages.add(entry.targetPackage);
+        }
+        Map<String, List<String>> immutable = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : result.entrySet()) {
+            immutable.put(entry.getKey(), Collections.unmodifiableList(entry.getValue()));
+        }
+        return Collections.unmodifiableMap(immutable);
+    }
+
+    /** Full online entries; source conditions and reviewed conversion flags are never projected away. */
+    public static List<LinkRuleEntry> ruleEntries(Context context) {
         Context app = app(context);
-        if (app == null) return Collections.emptyMap();
-        return readStoredRules(prefs(app)).rules;
+        if (app == null) return Collections.emptyList();
+        synchronized (CACHE_LOCK) {
+            SharedPreferences preferences = prefs(app);
+            OnlineRuleBundle.Cache owned = readOwnedRules(preferences);
+            if (owned.bundle != null) return owned.bundle.rules;
+            if (!owned.allowLegacy) return Collections.emptyList();
+            List<LinkRuleEntry> entries = new ArrayList<>();
+            for (Map.Entry<String, List<String>> item : readStoredRules(preferences).rules.entrySet()) {
+                for (String target : item.getValue()) entries.add(new LinkRuleEntry(item.getKey(), target,
+                        LinkRuleEntry.SOURCE_ONLINE, LinkRuleEntry.CONVERSION_NONE, "旧版在线缓存"));
+            }
+            return Collections.unmodifiableList(entries);
+        }
     }
 
     /** First-candidate projection retained for legacy callers. */
@@ -254,11 +283,16 @@ public final class OnlineLinkRuleRepository {
     }
 
     public static String statusSummary(Context context) {
-        int count = hostMappings(context).size();
-        long updatedAt = lastUpdatedAt(context);
-        if (updatedAt <= 0L) return count == 0 ? "\u5c1a\u672a\u4e0b\u8f7d\uff1b\u4ec5\u4f7f\u7528\u624b\u52a8\u89c4\u5219" : "\u5df2\u7f13\u5b58 " + count + " \u6761\u5728\u7ebf\u89c4\u5219";
-        String source = prefs(context).getString(KEY_LAST_SOURCE, "");
-        return "\u5df2\u7f13\u5b58 " + count + " \u6761\u5728\u7ebf\u89c4\u5219" + (source == null || source.isEmpty() ? "" : "\uff08" + source + "\uff09");
+        Context app = app(context);
+        if (app == null) return "应用上下文不可用";
+        OnlineRuleBundle.Cache owned = readOwnedRules(prefs(app));
+        if (owned.bundle != null) {
+            return SOURCE_NAME + " · revision " + owned.bundle.revision + " · "
+                    + owned.bundle.rules.size() + " 条" + (owned.usingBackup ? "（使用已验证备份）" : "");
+        }
+        if (!owned.allowLegacy) return "自有规则缓存不可用；仅使用手动规则";
+        int count = ruleEntries(app).size();
+        return count == 0 ? "尚未下载自有规则；仅使用手动规则" : "旧版在线缓存 " + count + " 条；等待迁移自有源";
     }
 
     /** Single-line state intended for privacy-safe diagnostic exports. */
@@ -266,102 +300,150 @@ public final class OnlineLinkRuleRepository {
         Context app = app(context);
         if (app == null) return "context-unavailable";
         SharedPreferences preferences = prefs(app);
-        StoredRules stored = readStoredRules(preferences);
+        OnlineRuleBundle.Cache owned = readOwnedRules(preferences);
+        StoredRules legacy = owned.allowLegacy ? readStoredRules(preferences) : StoredRules.invalid();
         return "enabled=" + preferences.getBoolean(KEY_ENABLED, false)
-                + ", cachedHosts=" + stored.rules.size()
-                + ", cacheValid=" + stored.valid
-                + ", usingBackup=" + stored.usingBackup
-                + ", checksumPresent=" + stored.checksumPresent
-                + ", revision=" + RULE_SOURCE_REVISION
+                + ", cachedRules=" + ruleEntries(app).size()
+                + ", cacheValid=" + (owned.bundle != null || legacy.valid)
+                + ", usingBackup=" + (owned.bundle != null ? owned.usingBackup : legacy.usingBackup)
+                + ", revision=" + (owned.bundle == null ? 0 : owned.bundle.revision)
+                + ", highestRevision=" + preferences.getLong(KEY_HIGHEST_REVISION, 0L)
+                + ", legacy=" + owned.allowLegacy
                 + ", updatedAt=" + preferences.getLong(KEY_UPDATED_AT, 0L)
-                + ", source=" + preferences.getString(KEY_LAST_SOURCE, "")
-                + ", status=" + preferences.getString(KEY_LAST_STATUS, "\u5c1a\u672a\u68c0\u67e5");
+                + ", retryAt=" + preferences.getLong(KEY_RETRY_AT, 0L)
+                + ", source=" + SOURCE_NAME
+                + ", status=" + preferences.getString(KEY_LAST_STATUS, "尚未检查");
     }
 
     public static String lastStatus(Context context) {
-        return prefs(context).getString(KEY_LAST_STATUS, "\u5c1a\u672a\u68c0\u67e5");
+        return prefs(context).getString(KEY_LAST_STATUS, "尚未检查");
     }
 
-    private static DownloadResult downloadRules() throws IOException {
-        IOException lastError = null;
-        for (RuleSource source : SOURCES) {
-            try {
-                List<String> rulePaths = listRulePaths(source);
-                if (rulePaths.isEmpty()) throw new IOException("no-rule-files");
-                Map<String, List<String>> merged = new LinkedHashMap<>();
-                for (String path : rulePaths) {
-                    String body = fetch(rawRuleUrl(source, path), MAX_RULE_FILE_BYTES);
-                    addSafeRule(merged, jsonObject(body));
-                    if (merged.size() >= MAX_HOSTS) break;
-                }
-                return new DownloadResult(merged, source.name);
-            } catch (IOException error) {
-                lastError = error;
-            }
+    private static OnlineRuleBundle downloadRules(SharedPreferences preferences) throws IOException {
+        long deadline = System.nanoTime() + REFRESH_TIMEOUT_NANOS;
+        try {
+            // Leave a bounded part of the same task deadline for the CDN on restricted networks.
+            return downloadFrom(preferences, MANIFEST_URL,
+                    Math.min(deadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(18)));
+        } catch (IOException firstFailure) {
+            return downloadFrom(preferences, FALLBACK_MANIFEST_URL, deadline);
         }
-        throw lastError == null ? new IOException("all-sources-unavailable") : lastError;
     }
 
-    private static List<String> listRulePaths(RuleSource source) throws IOException {
-        JsonObject index = jsonObject(fetch(source.indexUrl, MAX_INDEX_BYTES));
-        List<String> result = new ArrayList<>();
-        if (source.format == RuleSource.TreeFormat.GITHUB) {
-            JsonArray tree = index.has("tree") && index.get("tree").isJsonArray() ? index.getAsJsonArray("tree") : null;
-            if (tree == null) throw new IOException("github-tree-invalid");
-            for (JsonElement element : tree) {
-                if (!element.isJsonObject()) continue;
-                JsonObject item = element.getAsJsonObject();
-                String path = string(item, "path");
-                if ("blob".equals(string(item, "type")) && isRulePath(path)) result.add(path);
-            }
-        } else {
-            JsonArray files = index.has("files") && index.get("files").isJsonArray() ? index.getAsJsonArray("files") : null;
-            if (files == null) throw new IOException("jsdelivr-tree-invalid");
-            collectJsDelivrRulePaths(files, "", result);
+    private static OnlineRuleBundle downloadFrom(SharedPreferences preferences, HttpUrl manifestUrl,
+                                                long deadline) throws IOException {
+        OnlineRuleBundle.Manifest manifest = OnlineRuleBundle.parseManifest(
+                fetch(manifestUrl, OnlineRuleBundle.MAX_MANIFEST_BYTES, deadline));
+        OnlineRuleBundle.checkRevision(manifest, preferences.getLong(KEY_HIGHEST_REVISION, 0L),
+                preferences.getString(KEY_HIGHEST_HASH, ""));
+        OnlineRuleBundle.Cache local = readOwnedRules(preferences);
+        if (OnlineRuleBundle.canReuse(manifest, local)) return local.bundle;
+        OnlineRuleBundle bundle = OnlineRuleBundle.parse(fetch(bundleUrl(manifestUrl, manifest.file),
+                OnlineRuleBundle.MAX_BUNDLE_BYTES, deadline), manifest.checksum);
+        if (bundle.revision != manifest.revision) throw new IOException("manifest-bundle-revision-mismatch");
+        if (System.nanoTime() >= deadline) throw new IOException("refresh-deadline");
+        return bundle;
+    }
+
+    /** A validated relative path stays within the manifest directory and HTTPS origin. */
+    static HttpUrl bundleUrl(HttpUrl manifestUrl, String path) throws IOException {
+        if (manifestUrl == null || !"https".equals(manifestUrl.scheme()) || path == null
+                || path.startsWith("/") || path.contains("..") || path.contains("\\")
+                || path.contains(":") || path.contains("%") || path.contains("?") || path.contains("#")) {
+            throw new IOException("bundle-url-invalid");
         }
-        Collections.sort(result);
-        if (result.size() > MAX_RULE_FILES) return new ArrayList<>(result.subList(0, MAX_RULE_FILES));
+        HttpUrl base = manifestUrl.resolve(".");
+        HttpUrl result = base == null ? null : base.resolve(path);
+        if (result == null || !result.scheme().equals(manifestUrl.scheme())
+                || !result.host().equals(manifestUrl.host()) || result.port() != manifestUrl.port()
+                || !result.encodedPath().startsWith(base.encodedPath())) throw new IOException("bundle-origin");
         return result;
     }
 
-    private static void collectJsDelivrRulePaths(JsonArray files, String parent, List<String> target) {
-        for (JsonElement element : files) {
-            if (!element.isJsonObject()) continue;
-            JsonObject item = element.getAsJsonObject();
-            String name = string(item, "name");
-            if (name == null || name.isEmpty() || name.contains("/") || name.contains("\\")) continue;
-            String path = parent.isEmpty() ? name : parent + "/" + name;
-            String type = string(item, "type");
-            if ("file".equals(type)) {
-                if (isRulePath(path)) target.add(path);
-            } else if ("directory".equals(type) && item.has("files") && item.get("files").isJsonArray()) {
-                collectJsDelivrRulePaths(item.getAsJsonArray("files"), path, target);
+    private static String fetch(HttpUrl url, int maxBytes, long deadline) throws IOException {
+        if (url == null || maxBytes <= 0) throw new IOException("request-invalid");
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) throw new IOException("refresh-deadline");
+        Request request = new Request.Builder().url(url).header("User-Agent", "IceBridge-online-rules/1")
+                .header("Cache-Control", "no-cache").build();
+        Call call = CLIENT.newCall(request);
+        // Both requests consume one deadline, including DNS, connect, and response-body reads.
+        call.timeout().timeout(remaining, TimeUnit.NANOSECONDS);
+        try (Response response = call.execute()) {
+            if (!response.isSuccessful() || response.body() == null) throw new IOException("http-" + response.code());
+            if (response.body().contentLength() > maxBytes) throw new IOException("response-too-large");
+            try (InputStream input = response.body().byteStream()) {
+                return readUtf8Bounded(input, maxBytes);
             }
         }
     }
 
-    private static boolean isRulePath(String path) {
-        return path != null && path.startsWith("rules/") && path.endsWith(".json")
-                && !path.contains("..") && path.indexOf('\\') < 0 && path.length() <= 256;
+    static long retryDelayMillis(int failures) {
+        return Math.min(TimeUnit.HOURS.toMillis(6),
+                TimeUnit.MINUTES.toMillis(15) * (1L << Math.min(5, Math.max(0, failures - 1))));
     }
 
-    private static HttpUrl rawRuleUrl(RuleSource source, String path) throws IOException {
-        if (source == null || source.rawBase == null) throw new IOException("raw-base-invalid");
-        HttpUrl.Builder builder = source.rawBase.newBuilder();
-        for (String part : path.split("/")) builder.addPathSegment(part);
-        return builder.build();
+    static boolean shouldRefresh(long now, long lastUpdated, long retryAt, OnlineRuleBundle.Cache cache) {
+        if (now < retryAt) return false;
+        // A third-party timestamp must not postpone migration, and a recovered backup should
+        // attempt to repair the active snapshot without waiting another seven days.
+        return cache.bundle == null || cache.usingBackup || now - lastUpdated >= UPDATE_INTERVAL_MILLIS;
     }
 
-    private static String fetch(HttpUrl url, int maxBytes) throws IOException {
-        if (url == null) throw new IOException("url-invalid");
-        if (maxBytes <= 0) throw new IOException("response-limit-invalid");
-        Request request = new Request.Builder().url(url).header("User-Agent", "IceBridge-safe-rules/1").build();
-        try (Response response = CLIENT.newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) throw new IOException("http-" + response.code());
-            long contentLength = response.body().contentLength();
-            if (contentLength > maxBytes) throw new IOException("response-too-large");
-            try (InputStream input = response.body().byteStream()) {
-                return readUtf8Bounded(input, maxBytes);
+    private static OnlineRuleBundle.Cache readOwnedRules(SharedPreferences preferences) {
+        synchronized (CACHE_LOCK) {
+            // getAll captures one atomic preference view; individual getters could straddle a commit.
+            Map<String, ?> values = preferences.getAll();
+            OwnedCacheSnapshot previous = lastOwnedCache;
+            if (previous != null && previous.matches(preferences, values)) return previous.cache;
+            OwnedCacheSnapshot next = new OwnedCacheSnapshot(preferences, values);
+            lastOwnedCache = next;
+            return next.cache;
+        }
+    }
+
+    private static void saveOwnedRules(Context context, OnlineRuleBundle bundle, Result result) {
+        commitOwnedRules(prefs(context), bundle, result);
+        // The durable snapshot is already available when the system process observes this signal.
+        try { context.getContentResolver().notifyChange(ConfigProvider.URI, null); }
+        catch (RuntimeException ignored) { /* Periodic configuration refresh remains a fallback. */ }
+    }
+
+    static void commitOwnedRules(SharedPreferences preferences, OnlineRuleBundle bundle, Result result) {
+        synchronized (CACHE_LOCK) {
+            Map<String, ?> beforeCommit = preferences.getAll();
+            OnlineRuleBundle.Cache previous = readOwnedRules(preferences);
+            OnlineRuleBundle backup = previous.bundle == null ? bundle : previous.bundle;
+            // Active snapshot, validated backup, anti-rollback state and status form one disk commit.
+            // Replacing the whole bundle deliberately permits removal and an explicit empty rule set.
+            boolean saved = preferences.edit().putString(KEY_OWNED_RULES, bundle.raw)
+                    .putString(KEY_OWNED_HASH, bundle.checksum)
+                    .putString(KEY_OWNED_BACKUP, backup.raw).putString(KEY_OWNED_BACKUP_HASH, backup.checksum)
+                    .putLong(KEY_HIGHEST_REVISION, bundle.revision).putString(KEY_HIGHEST_HASH, bundle.checksum)
+                    .putBoolean(KEY_MIGRATED, true).putLong(KEY_UPDATED_AT, result.updatedAt)
+                    .putString(KEY_LAST_STATUS, result.message).putString(KEY_LAST_SOURCE, result.sourceName)
+                    .putInt(KEY_FAILURE_COUNT, 0).putLong(KEY_RETRY_AT, 0L)
+                    .remove(KEY_RULES).remove(KEY_RULES_CHECKSUM).remove(KEY_RULES_BACKUP).remove(KEY_RULES_BACKUP_CHECKSUM)
+                    .commit();
+            if (!saved) {
+                // SharedPreferences updates its in-memory map even when writing to disk fails.
+                // Restore only this transaction's keys so a failed update cannot become active.
+                SharedPreferences.Editor rollback = preferences.edit();
+                String[] keys = {KEY_OWNED_RULES, KEY_OWNED_HASH, KEY_OWNED_BACKUP, KEY_OWNED_BACKUP_HASH,
+                        KEY_HIGHEST_REVISION, KEY_HIGHEST_HASH, KEY_MIGRATED, KEY_UPDATED_AT,
+                        KEY_LAST_STATUS, KEY_LAST_SOURCE, KEY_FAILURE_COUNT, KEY_RETRY_AT,
+                        KEY_RULES, KEY_RULES_CHECKSUM, KEY_RULES_BACKUP, KEY_RULES_BACKUP_CHECKSUM};
+                for (String key : keys) {
+                    Object previousValue = beforeCommit.get(key);
+                    if (previousValue instanceof String) rollback.putString(key, (String) previousValue);
+                    else if (previousValue instanceof Long) rollback.putLong(key, (Long) previousValue);
+                    else if (previousValue instanceof Integer) rollback.putInt(key, (Integer) previousValue);
+                    else if (previousValue instanceof Boolean) rollback.putBoolean(key, (Boolean) previousValue);
+                    else if (previousValue instanceof Float) rollback.putFloat(key, (Float) previousValue);
+                    else rollback.remove(key);
+                }
+                rollback.commit();
+                throw new IllegalStateException("rule-cache-commit-failed");
             }
         }
     }
@@ -379,34 +461,8 @@ public final class OnlineLinkRuleRepository {
             output.write(buffer, 0, read);
             total += read;
         }
-        return new String(output.toByteArray(), StandardCharsets.UTF_8);
-    }
-
-    private static JsonObject jsonObject(String input) throws IOException {
-        try {
-            JsonElement parsed = new JsonParser().parse(input);
-            if (!parsed.isJsonObject()) throw new IOException("json-not-object");
-            return parsed.getAsJsonObject();
-        } catch (RuntimeException error) {
-            throw new IOException("json-invalid", error);
-        }
-    }
-
-    /** Fluid Cloud safe subset: type=pkg, pkg=<package>, tigger=[host patterns]. */
-    private static void addSafeRule(Map<String, List<String>> target, JsonObject rule) {
-        if (!"pkg".equalsIgnoreCase(string(rule, "type"))) return;
-        String packageName = string(rule, "pkg");
-        if (packageName == null || !PACKAGE_PATTERN.matcher(packageName).matches()) return;
-        JsonElement triggers = rule.get("tigger");
-        if (triggers == null || !triggers.isJsonArray()) return;
-        for (JsonElement trigger : triggers.getAsJsonArray()) {
-            if (!trigger.isJsonPrimitive()) continue;
-            String host = normalizeHost(trigger.getAsString());
-            if (host == null || (target.size() >= MAX_HOSTS && !target.containsKey(host))) continue;
-            List<String> candidates = target.get(host);
-            if (candidates == null) { candidates = new ArrayList<>(); target.put(host, candidates); }
-            if (!candidates.contains(packageName)) candidates.add(packageName);
-        }
+        return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(output.toByteArray())).toString();
     }
 
     /** Accept only exact host patterns such as xhslink\\.com; reject all general-purpose regex. */
@@ -418,67 +474,6 @@ public final class OnlineLinkRuleRepository {
                 || host.indexOf('?') >= 0 || host.indexOf('+') >= 0 || host.indexOf('|') >= 0
                 || host.indexOf('^') >= 0 || host.indexOf('$') >= 0) return null;
         return HOST_PATTERN.matcher(host).matches() ? host : null;
-    }
-
-    /**
-     * Merges a downloaded snapshot into the existing online cache. A refresh is additive:
-     * old valid host/package candidates are retained, while duplicate host/package pairs are
-     * written only once. This prevents a partial source response from deleting usable rules.
-     */
-    private static int mergeAndSaveRules(Context context, Map<String, List<String>> downloaded) {
-        Map<String, List<String>> merged = new LinkedHashMap<>();
-        appendCandidates(merged, hostCandidates(context));
-        appendCandidates(merged, downloaded);
-        saveRules(context, merged);
-        int count = 0;
-        for (List<String> packages : merged.values()) count += packages.size();
-        return count;
-    }
-
-    private static void appendCandidates(Map<String, List<String>> target, Map<String, List<String>> source) {
-        if (source == null) return;
-        for (Map.Entry<String, List<String>> entry : source.entrySet()) {
-            String host = normalizeHost(entry.getKey());
-            if (host == null) continue;
-            if (target.size() >= MAX_HOSTS && !target.containsKey(host)) continue;
-            List<String> packages = target.get(host);
-            if (packages == null) { packages = new ArrayList<>(); target.put(host, packages); }
-            if (entry.getValue() == null) continue;
-            for (String packageName : entry.getValue()) {
-                if (packageName == null || !PACKAGE_PATTERN.matcher(packageName).matches()) continue;
-                if (!packages.contains(packageName)) packages.add(packageName);
-            }
-        }
-    }
-
-    private static void saveRules(Context context, Map<String, List<String>> rules) {
-        JsonArray array = new JsonArray();
-        for (Map.Entry<String, List<String>> entry : rules.entrySet()) {
-            JsonObject item = new JsonObject();
-            item.addProperty("host", entry.getKey());
-            JsonArray packages = new JsonArray();
-            for (String packageName : entry.getValue()) packages.add(packageName);
-            item.add("packages", packages);
-            array.add(item);
-        }
-        String serialized = array.toString();
-        SharedPreferences preferences = prefs(context);
-        String previous = preferences.getString(KEY_RULES, "");
-        String previousChecksum = preferences.getString(KEY_RULES_CHECKSUM, "");
-        Map<String, List<String>> previousRules = parseStoredCandidates(previous);
-        boolean previousValid = !previous.isEmpty() && !previousRules.isEmpty()
-                && (previousChecksum.isEmpty() || checksumMatches(previous, previousChecksum));
-        // Older releases had no checksum. A parseable non-empty cache is accepted once as a
-        // legacy cache and receives a checksum when it is moved to the backup slot.
-        SharedPreferences.Editor editor = preferences.edit();
-        if (previousValid) {
-            editor.putString(KEY_RULES_BACKUP, previous)
-                    .putString(KEY_RULES_BACKUP_CHECKSUM, sha256(previous));
-        }
-        editor.putString(KEY_RULES, serialized)
-                .putString(KEY_RULES_CHECKSUM, sha256(serialized));
-        // Rule caches are small and must not be partially committed across a process death.
-        if (!editor.commit()) throw new IllegalStateException("rule-cache-commit-failed");
     }
 
     private static StoredRules readStoredRules(SharedPreferences preferences) {
@@ -595,29 +590,35 @@ public final class OnlineLinkRuleRepository {
         }
     }
 
-    private static final class DownloadResult {
-        final Map<String, List<String>> rules;
-        final String sourceName;
+    private static final class OwnedCacheSnapshot {
+        private static final String[] KEYS = {KEY_OWNED_RULES, KEY_OWNED_HASH, KEY_OWNED_BACKUP,
+                KEY_OWNED_BACKUP_HASH, KEY_HIGHEST_REVISION, KEY_HIGHEST_HASH, KEY_MIGRATED};
+        final SharedPreferences preferences;
+        final Map<String, ?> values;
+        final OnlineRuleBundle.Cache cache;
 
-        DownloadResult(Map<String, List<String>> rules, String sourceName) {
-            this.rules = rules;
-            this.sourceName = sourceName;
+        OwnedCacheSnapshot(SharedPreferences preferences, Map<String, ?> values) {
+            this.preferences = preferences;
+            Map<String, Object> relevant = new LinkedHashMap<>();
+            for (String key : KEYS) relevant.put(key, values.get(key));
+            this.values = relevant;
+            Object highest = values.get(KEY_HIGHEST_REVISION);
+            Object migrated = values.get(KEY_MIGRATED);
+            cache = OnlineRuleBundle.selectCache(text(values, KEY_OWNED_RULES), text(values, KEY_OWNED_HASH),
+                    text(values, KEY_OWNED_BACKUP), text(values, KEY_OWNED_BACKUP_HASH),
+                    highest == null ? 0 : (highest instanceof Long ? (Long) highest : -1),
+                    text(values, KEY_HIGHEST_HASH), migrated != null && !Boolean.FALSE.equals(migrated));
         }
-    }
 
-    private static final class RuleSource {
-        enum TreeFormat { GITHUB, JSDELIVR }
+        boolean matches(SharedPreferences preferences, Map<String, ?> other) {
+            if (this.preferences != preferences) return false;
+            for (String key : KEYS) if (!Objects.equals(values.get(key), other.get(key))) return false;
+            return true;
+        }
 
-        final String name;
-        final HttpUrl indexUrl;
-        final HttpUrl rawBase;
-        final TreeFormat format;
-
-        RuleSource(String name, String indexUrl, String rawBase, TreeFormat format) {
-            this.name = name;
-            this.indexUrl = HttpUrl.parse(indexUrl);
-            this.rawBase = HttpUrl.parse(rawBase);
-            this.format = format;
+        private static String text(Map<String, ?> values, String key) {
+            Object value = values.get(key);
+            return value == null ? "" : value instanceof String ? (String) value : "invalid-preference-type";
         }
     }
 

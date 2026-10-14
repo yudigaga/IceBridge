@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 
 import com.huanchengfly.icebridge.R;
+import com.huanchengfly.icebridge.SystemServerConfigContract;
 import com.huanchengfly.icebridge.utils.Util;
 
 public final class RootEngine extends BaseEngine {
@@ -26,8 +27,9 @@ public final class RootEngine extends BaseEngine {
             callback.onFailure();
             return;
         }
-        RootCommandRunner.setPackageEnabled(packageName, enabled, result -> {
+        RootCommandRunner.setPackageEnabled(packageName, enabled, SystemServerConfigContract.currentUserId(), result -> {
             if (result.isSuccessful()) {
+                SystemServerConfigContract.notifyChanged(getContext());
                 callback.onSuccess();
             } else {
                 callback.onFailure();

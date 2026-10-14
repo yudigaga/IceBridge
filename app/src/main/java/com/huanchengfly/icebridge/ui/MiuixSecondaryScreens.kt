@@ -81,7 +81,7 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
     var fallback by remember { mutableStateOf(p.getBoolean(KEY_BROWSER_FALLBACK, true)) }
     var clip by remember { mutableStateOf(p.getBoolean(KEY_CLIPBOARD, false)) }
     var debug by remember { mutableStateOf(p.getBoolean(KEY_DEBUG, false)) }
-    fun setv(k: String, v: Boolean) { a.setPref(k, v); saveConfig(k, v) }
+    fun setv(k: String, v: Boolean) { a.setPref(k, v); saveConfig(k, v); com.huanchengfly.icebridge.SystemServerConfigContract.notifyChanged(a) }
     fun prereq() { if (!bridge) { bridge = true; setv(KEY_AUTO_BRIDGE, true) }; if (!auto) { auto = true; setv(KEY_AUTO_OPEN, true) } }
     fun setBridge(v: Boolean) { bridge = v; setv(KEY_AUTO_BRIDGE, v); if (!v) { auto = false; native = false; payment = false; setv(KEY_AUTO_OPEN, false); setv(KEY_NATIVE_CAPTURE, false); setv(KEY_PAYMENT_BRIDGE, false) } }
     MiuixPage("桥接与自动化") { pad -> SettingsColumn(pad) {

@@ -1,0 +1,3 @@
+online-rules/** text eol=lf
+tools/rules/*.py text eol=lf
+version.properties text eol=lf

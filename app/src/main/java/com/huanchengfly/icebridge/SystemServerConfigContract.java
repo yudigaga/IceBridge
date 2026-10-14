@@ -1,11 +1,19 @@
 package com.huanchengfly.icebridge;
 
 import android.os.Bundle;
+import android.content.Context;
+import android.net.Uri;
+import android.os.Process;
+import android.util.Log;
+
+import com.huanchengfly.icebridge.automation.LinkRuleEntry;
+import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.List;
 
 public final class SystemServerConfigContract {
     public static final String AUTHORITY = "io.github.yudigaga.icebridge.providers.ConfigProvider";
@@ -20,16 +28,29 @@ public final class SystemServerConfigContract {
     public static final String KEY_SNAPSHOT_ERROR = "snapshot_error";
     public static final String KEY_FROZEN_PACKAGES = "frozen_packages";
     public static final String KEY_ONLINE_HOST_RULES = "online_host_rules";
+    public static final String KEY_USER_ID = "snapshot_user_id";
     public static final String STATUS_OK = "ok";
     public static final String STATUS_UNAVAILABLE = "unavailable";
-    public static final int SCHEMA_VERSION = 6;
+    public static final int SCHEMA_VERSION = 7;
 
     private SystemServerConfigContract() {
     }
 
+    public static int currentUserId() {
+        // UserHandle's public hashCode is the user handle value, also used by the IceBox SDK.
+        int userId = Process.myUserHandle().hashCode();
+        return userId >= 0 && userId <= 999 ? userId : -1;
+    }
+
+    public static void notifyChanged(Context context) {
+        if (context == null) return;
+        try { context.getContentResolver().notifyChange(Uri.parse("content://" + AUTHORITY + "/config"), null); }
+        catch (RuntimeException error) { Log.w("IceBridgeConfig", "snapshot change notification unavailable", error); }
+    }
+
     public static Snapshot parse(Bundle snapshot) {
         if (snapshot == null) {
-            return parseValues(null, null, null, false, false, false, false, true, null, null);
+            return parseValues(null, null, null, false, false, false, false, true, null, null, -1);
         }
         return parseValues(
                 snapshot.getInt(KEY_SCHEMA_VERSION, 0),
@@ -41,7 +62,8 @@ public final class SystemServerConfigContract {
                 snapshot.getBoolean(KEY_CLIPBOARD_AUTO_OPEN, false),
                 snapshot.getBoolean(KEY_PAYMENT_SDK_BRIDGE, true),
                 snapshot.getStringArray(KEY_FROZEN_PACKAGES),
-                snapshot.getStringArray(KEY_ONLINE_HOST_RULES));
+                snapshot.getStringArray(KEY_ONLINE_HOST_RULES),
+                snapshot.getInt(KEY_USER_ID, -1));
     }
 
     // Kept independent of Android Bundle so the contract rules can be covered by local JVM tests.
@@ -49,7 +71,7 @@ public final class SystemServerConfigContract {
                                 boolean recoveryEnabled, boolean autoOpenLinks,
                                 boolean nativeLinkCapture, boolean clipboardAutoOpen,
                                 boolean paymentSdkBridge, String[] frozenPackages,
-                                String[] onlineHostRules) {
+                                String[] onlineHostRules, int userId) {
         if (schemaVersion == null) {
             return Snapshot.unavailable("null-snapshot");
         }
@@ -61,8 +83,13 @@ public final class SystemServerConfigContract {
                     ? (status == null ? "status-missing" : status)
                     : error);
         }
-        return Snapshot.available(recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
-                paymentSdkBridge, frozenPackages, onlineHostRules);
+        if (userId < 0 || userId > 999) return Snapshot.unavailable("snapshot-user-invalid");
+        try {
+            return Snapshot.available(recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
+                    paymentSdkBridge, frozenPackages, onlineHostRules, userId);
+        } catch (IllegalArgumentException invalidRules) {
+            return Snapshot.unavailable("scoped-rules-invalid");
+        }
     }
     public static final class Snapshot {
         public final boolean available;
@@ -74,10 +101,12 @@ public final class SystemServerConfigContract {
         public final String status;
         public final Set<String> frozenPackages;
         public final String[] onlineHostRules;
+        public final List<LinkRuleEntry> scopedRules;
+        public final int userId;
 
         private Snapshot(boolean available, boolean recoveryEnabled, boolean autoOpenLinks,
                          boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge, String status,
-                         Set<String> frozenPackages, String[] onlineHostRules) {
+                         Set<String> frozenPackages, String[] onlineHostRules, int userId) {
             this.available = available;
             this.recoveryEnabled = recoveryEnabled;
             this.autoOpenLinks = autoOpenLinks;
@@ -86,12 +115,14 @@ public final class SystemServerConfigContract {
             this.paymentSdkBridge = paymentSdkBridge;
             this.status = status;
             this.frozenPackages = frozenPackages;
-            this.onlineHostRules = onlineHostRules == null ? new String[0] : onlineHostRules;
+            this.onlineHostRules = onlineHostRules == null ? new String[0] : onlineHostRules.clone();
+            this.scopedRules = ScopedRuleResolver.decode(this.onlineHostRules);
+            this.userId = userId;
         }
 
         private static Snapshot available(boolean recoveryEnabled, boolean autoOpenLinks,
                                           boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
-                                          String[] frozenPackages, String[] onlineHostRules) {
+                                          String[] frozenPackages, String[] onlineHostRules, int userId) {
             Set<String> values = new LinkedHashSet<>();
             if (frozenPackages != null) {
                 values.addAll(Arrays.asList(frozenPackages));
@@ -99,11 +130,11 @@ public final class SystemServerConfigContract {
                 values.remove("");
             }
             return new Snapshot(true, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
-                    paymentSdkBridge, STATUS_OK, Collections.unmodifiableSet(values), onlineHostRules);
+                    paymentSdkBridge, STATUS_OK, Collections.unmodifiableSet(values), onlineHostRules, userId);
         }
 
         private static Snapshot unavailable(String status) {
-            return new Snapshot(false, false, false, false, false, false, status, Collections.emptySet(), new String[0]);
+            return new Snapshot(false, false, false, false, false, false, status, Collections.emptySet(), new String[0], -1);
         }
     }
 }

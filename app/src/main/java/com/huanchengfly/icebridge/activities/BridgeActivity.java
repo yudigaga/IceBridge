@@ -23,11 +23,15 @@ import androidx.recyclerview.widget.SimpleItemAnimator;
 
 import com.huanchengfly.about.utils.DisplayUtil;
 import com.huanchengfly.icebridge.R;
+import com.huanchengfly.icebridge.SystemServerConfigContract;
 import com.huanchengfly.icebridge.adapters.GridChooseResolveInfoAdapter;
 import com.huanchengfly.icebridge.dividers.SpacesItemDecoration;
 import com.huanchengfly.icebridge.automation.LinkAutomationConfig;
 import com.huanchengfly.icebridge.automation.LinkAutomationDiagnostics;
 import com.huanchengfly.icebridge.automation.FluidCloudRuleCatalog;
+import com.huanchengfly.icebridge.automation.LinkRuleEntry;
+import com.huanchengfly.icebridge.automation.RuleConfigRepository;
+import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
 import com.huanchengfly.icebridge.android16.PaymentSdkBridgeResolver;
 import com.huanchengfly.icebridge.engines.BaseEngine;
 import com.huanchengfly.icebridge.engines.EngineManager;
@@ -52,6 +56,7 @@ public class BridgeActivity extends BaseActivity {
     private static final String EXTRA_NATIVE_BRIDGE_SOURCE = "native_bridge_source";
 
     private BaseEngine mEngine;
+    private String nativeRuleConversion = LinkRuleEntry.CONVERSION_NONE;
 
     // A native bridge can receive duplicate lifecycle/callback notifications while thawing.
     // Keep the activity one-shot so only one terminal action (launch or fallback) is dispatched.
@@ -107,6 +112,12 @@ public class BridgeActivity extends BaseActivity {
         String target = getIntent().getStringExtra(EXTRA_TARGET_PACKAGE);
         String rawUrl = getIntent().getStringExtra(EXTRA_NATIVE_LINK_URL);
         Intent sourceIntent = getIntent().getParcelableExtra(EXTRA_ORIGINAL_INTENT);
+        int requestedUser = getIntent().getIntExtra("user_id", -1);
+        if (requestedUser < 0 || requestedUser != SystemServerConfigContract.currentUserId()) {
+            LinkAutomationDiagnostics.record(this, "native_user_rejected", null, "request=" + requestedUser);
+            finishBridgeTask();
+            return;
+        }
         boolean directIntent = getIntent().getBooleanExtra(EXTRA_NATIVE_DIRECT_INTENT, false);
         boolean prewarmOnly = getIntent().getBooleanExtra(EXTRA_NATIVE_PREWARM_ONLY, false);
         String bridgeSource = getIntent().getStringExtra(EXTRA_NATIVE_BRIDGE_SOURCE);
@@ -198,6 +209,12 @@ public class BridgeActivity extends BaseActivity {
     private boolean isValidNativeBridgePayload(String target, String rawUrl, Intent sourceIntent,
                                                boolean directIntent, boolean prewarmOnly,
                                                String bridgeSource) {
+        int requestUser = getIntent().getIntExtra("user_id", -1);
+        if (requestUser < 0 || requestUser != SystemServerConfigContract.currentUserId()) {
+            LinkAutomationDiagnostics.record(this, "native_user_rejected", null,
+                    "request=" + requestUser + " current=" + SystemServerConfigContract.currentUserId());
+            return false;
+        }
         if (!isValidPackageName(target) || getPackageName().equals(target)
                 || !isKnownPackage(target) || sourceIntent == null
                 || bridgeSource == null || bridgeSource.trim().isEmpty()) {
@@ -228,17 +245,32 @@ public class BridgeActivity extends BaseActivity {
         }
         if (uri.getHost() == null || uri.getHost().trim().isEmpty()) return false;
         if ("clipboard".equals(bridgeSource)) {
-            return sourceIntent.getComponent() == null && sourceIntent.getPackage() == null;
+            return sourceIntent.getComponent() == null && sourceIntent.getPackage() == null
+                    && matchesNativeRule(target, uri, "*");
         }
         if ("wechat_webview".equals(bridgeSource)) {
             return hasSourceComponent(sourceIntent, "com.tencent.mm",
-                    "com.tencent.mm.plugin.webview.ui.tools.MMWebViewUI");
+                    "com.tencent.mm.plugin.webview.ui.tools.MMWebViewUI")
+                    && matchesNativeRule(target, uri, "com.tencent.mm");
         }
         if ("qq_browser".equals(bridgeSource)) {
             return hasSourceComponent(sourceIntent, "com.tencent.mobileqq",
-                    "com.tencent.mobileqq.activity.QQBrowserActivity");
+                    "com.tencent.mobileqq.activity.QQBrowserActivity")
+                    && matchesNativeRule(target, uri, "com.tencent.mobileqq");
         }
         return "custom_scheme".equals(bridgeSource);
+    }
+
+    /** Recheck the rule in the app: a stale or forged transport target cannot override current scope. */
+    private boolean matchesNativeRule(String target, Uri uri, String sourcePackage) {
+        List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(
+                RuleConfigRepository.installedRuleEntries(this), sourcePackage, uri.getHost());
+        LinkRuleEntry selected = ScopedRuleResolver.selectFrozenRule(matches, java.util.Collections.singleton(target));
+        if (selected == null) return false;
+        String transportedConversion = getIntent().getStringExtra("rule_conversion");
+        if (!selected.urlConversion.equals(transportedConversion)) return false;
+        nativeRuleConversion = selected.urlConversion;
+        return true;
     }
 
     private boolean canReplayPaymentSdkIntent(String target, String bridgeSource,
@@ -360,7 +392,8 @@ public class BridgeActivity extends BaseActivity {
                 }
             } else {
                 Uri originalUri = Uri.parse(rawUrl);
-                Uri handoffUri = FluidCloudRuleCatalog.rewriteForTarget(originalUri, target);
+                Uri handoffUri = LinkRuleEntry.CONVERSION_FIXED_DEEP_LINK.equals(nativeRuleConversion)
+                        ? FluidCloudRuleCatalog.rewriteForTarget(originalUri, target) : originalUri;
                 launch = new Intent(Intent.ACTION_VIEW, handoffUri);
                 launch.setPackage(target);
                 launch.addCategory(Intent.CATEGORY_BROWSABLE);

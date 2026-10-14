@@ -6,20 +6,17 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Process;
-import android.os.UserHandle;
 import android.text.TextUtils;
 
-import com.huanchengfly.icebridge.android16.CustomSchemeTargetResolver;
 import com.huanchengfly.icebridge.engines.BaseEngine;
 import com.huanchengfly.icebridge.engines.EngineManager;
 import com.huanchengfly.icebridge.engines.RootCommandRunner;
 import com.huanchengfly.icebridge.engines.RootEngine;
+import com.huanchengfly.icebridge.SystemServerConfigContract;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.lang.reflect.Method;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -57,12 +54,14 @@ public final class LinkAutomationController {
             finish(completion);
             return;
         }
-        String target = resolveTarget(app, uri, sourcePackage);
+        LinkRuleEntry matchedRule = resolveRule(app, uri, "clipboard".equals(source) ? "*" : sourcePackage);
+        String target = matchedRule == null ? null : matchedRule.targetPackage;
         if (!LinkAutomationConfig.isPackage(target)) {
             LinkAutomationDiagnostics.record(app, "skip", uri.toString(), "UNKNOWN_TARGET source=" + source);
             finish(completion);
             return;
         }
+        String conversion = matchedRule.urlConversion;
         ApplicationInfo info = getApplicationInfo(app, target);
         BaseEngine engine = EngineManager.getEngine(app);
         if (info == null) {
@@ -70,7 +69,7 @@ public final class LinkAutomationController {
             // package flags. The URL-to-package mapping is already allow-listed, so delegate the
             // package existence/state decision to IceBox/root instead of incorrectly reporting it
             // as uninstalled. This path never runs for arbitrary URL hosts.
-            restoreHiddenTarget(app, uri, target, background, source, engine, completion);
+            restoreHiddenTarget(app, uri, target, conversion, background, source, engine, completion);
             return;
         }
         if (!isInstalled(info)) {
@@ -83,7 +82,7 @@ public final class LinkAutomationController {
         // onlyFrozenLinkTargets controls whether thaw is needed; it must never suppress
         // launching an already-enabled target. A user may tap the same URL repeatedly.
         if (!frozen) {
-            launch(app, uri, target, background, source, completion);
+            launch(app, uri, target, conversion, background, source, completion);
             return;
         }
         if (engine.checkPermission() != PackageManager.PERMISSION_GRANTED) {
@@ -96,7 +95,7 @@ public final class LinkAutomationController {
             engine.setEnabled(target, true, new BaseEngine.Callback() {
                 @Override public void onSuccess() {
                     LinkAutomationDiagnostics.record(app, "thaw_ok", uri.toString(), "target=" + target);
-                    launch(app, uri, target, background, source, completion);
+                    launch(app, uri, target, conversion, background, source, completion);
                 }
                 @Override public void onFailure() {
                     LinkAutomationDiagnostics.record(app, "fail", uri.toString(), "THAW_FAILED target=" + target);
@@ -109,7 +108,7 @@ public final class LinkAutomationController {
         }
     }
 
-    private static void restoreHiddenTarget(Context app, Uri uri, String target, boolean background,
+    private static void restoreHiddenTarget(Context app, Uri uri, String target, String conversion, boolean background,
                                             String source, BaseEngine engine, Completion completion) {
         if (engine.checkPermission() != PackageManager.PERMISSION_GRANTED) {
             LinkAutomationDiagnostics.record(app, "fail", uri.toString(),
@@ -125,7 +124,7 @@ public final class LinkAutomationController {
                     ApplicationInfo restored = getApplicationInfo(app, target);
                     LinkAutomationDiagnostics.record(app, "thaw_ok", uri.toString(),
                             "target=" + target + (restored == null ? " visibility=pending" : ""));
-                    launch(app, uri, target, background, source, completion);
+                    launch(app, uri, target, conversion, background, source, completion);
                 }
 
                 @Override public void onFailure() {
@@ -141,51 +140,45 @@ public final class LinkAutomationController {
         }
     }
 
-    private static void launch(Context app, Uri uri, String target, boolean background, String source,
+    private static void launch(Context app, Uri uri, String target, String conversion, boolean background, String source,
                                Completion completion) {
         // b23.tv is a web redirect. Resolve only this known Bilibili short-link host off the main
         // thread so the official Bilibili App receives its final bilibili.com URL directly.
         if (isBilibiliShortLink(uri)) {
             SHORT_LINK_EXECUTOR.execute(() -> launchResolved(app, expandBilibiliShortLink(app, uri),
-                    target, background, source, completion));
+                    target, conversion, background, source, completion));
         } else {
-            launchResolved(app, uri, target, background, source, completion);
+            launchResolved(app, uri, target, conversion, background, source, completion);
         }
     }
 
-    private static void launchResolved(Context app, Uri uri, String target, boolean background, String source,
+    private static void launchResolved(Context app, Uri uri, String target, String conversion, boolean background, String source,
                                        Completion completion) {
         if (background && EngineManager.getEngine(app) instanceof RootEngine) {
             int userId = currentUserIdCompat();
             if (userId >= 0) {
-                RootCommandRunner.startViewAsUser(uri, target, userId, result -> {
+                RootCommandRunner.startViewAsUser(uri, target, userId,
+                        LinkRuleEntry.CONVERSION_FIXED_DEEP_LINK.equals(conversion), result -> {
                     if (result.isSuccessful()) {
                         LinkAutomationDiagnostics.record(app, "open_ok", uri.toString(), "target=" + target + " source=" + source + " via=root");
                         finish(completion);
                     } else {
                         LinkAutomationDiagnostics.record(app, "open_retry", uri.toString(), "ROOT_AM_FAILED target=" + target);
-                        launchFromApp(app, uri, target, source, completion);
+                        launchFromApp(app, uri, target, conversion, source, completion);
                     }
                 });
                 return;
             }
             LinkAutomationDiagnostics.record(app, "open_retry", uri.toString(), "ROOT_USER_UNKNOWN target=" + target);
         } else {
-            launchFromApp(app, uri, target, source, completion);
+            launchFromApp(app, uri, target, conversion, source, completion);
             return;
         }
-        launchFromApp(app, uri, target, source, completion);
+        launchFromApp(app, uri, target, conversion, source, completion);
     }
 
     private static int currentUserIdCompat() {
-        try {
-            Method method = UserHandle.class.getDeclaredMethod("getUserId", Integer.TYPE);
-            method.setAccessible(true);
-            Object value = method.invoke(null, Process.myUid());
-            return value instanceof Integer && (Integer) value >= 0 ? (Integer) value : -1;
-        } catch (Throwable ignored) {
-            return -1;
-        }
+        return SystemServerConfigContract.currentUserId();
     }
 
     private static boolean isBilibiliShortLink(Uri uri) {
@@ -230,10 +223,11 @@ public final class LinkAutomationController {
         return original;
     }
 
-    private static void launchFromApp(Context app, Uri uri, String target, String source,
+    private static void launchFromApp(Context app, Uri uri, String target, String conversion, String source,
                                       Completion completion) {
         try {
-            Uri handoffUri = FluidCloudRuleCatalog.rewriteForTarget(uri, target);
+            Uri handoffUri = LinkRuleEntry.CONVERSION_FIXED_DEEP_LINK.equals(conversion)
+                    ? FluidCloudRuleCatalog.rewriteForTarget(uri, target) : uri;
             Intent launch = new Intent(Intent.ACTION_VIEW, handoffUri);
             launch.setPackage(target);
             if (!uri.equals(handoffUri)) {
@@ -283,12 +277,12 @@ public final class LinkAutomationController {
         }
     }
 
-    private static String resolveTarget(Context context, Uri uri, String sourcePackage) {
+    private static LinkRuleEntry resolveRule(Context context, Uri uri, String sourcePackage) {
         // A host can have multiple valid clients. Prefer the first installed candidate while
         // retaining the rule order selected in the configuration snapshot.
-        for (String candidate : CustomSchemeTargetResolver.findTargetPackagesForUri(uri.getScheme(), uri.getHost(),
-                RuleConfigRepository.effectiveHostCandidates(context, sourcePackage))) {
-            ApplicationInfo info = getApplicationInfo(context, candidate);
+        for (LinkRuleEntry candidate : ScopedRuleResolver.matchingRules(
+                RuleConfigRepository.effectiveRuleEntries(context), sourcePackage, uri.getHost())) {
+            ApplicationInfo info = getApplicationInfo(context, candidate.targetPackage);
             if (isInstalled(info)) return candidate;
         }
         return null;

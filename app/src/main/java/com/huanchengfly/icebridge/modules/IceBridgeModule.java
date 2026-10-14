@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.database.ContentObserver;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -28,7 +29,10 @@ import com.huanchengfly.icebridge.android16.IntentUrlExtractor;
 import com.huanchengfly.icebridge.android16.NativeActivityLinkCapture;
 import com.huanchengfly.icebridge.android16.NativeBridgePolicy;
 import com.huanchengfly.icebridge.android16.CustomSchemeTargetResolver;
-import com.huanchengfly.icebridge.automation.OnlineLinkRuleRepository;
+import com.huanchengfly.icebridge.automation.LinkRuleEntry;
+import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
+import com.huanchengfly.icebridge.automation.BoundedExpiringDeduplicator;
+import com.huanchengfly.icebridge.automation.SnapshotCachePolicy;
 import com.huanchengfly.icebridge.android16.PaymentSdkBridgeResolver;
 import com.huanchengfly.icebridge.android16.ResolvedLaunch;
 import com.huanchengfly.icebridge.android16.SystemServerPackageStateProbe;
@@ -94,15 +98,19 @@ public final class IceBridgeModule extends XposedModule {
     private volatile long lastRecoveryConfigurationAttemptMillis;
     private volatile long lastSuccessfulRecoveryConfigurationMillis;
     private volatile int recoveryConfigurationFailureCount;
+    private volatile boolean expiredConfigurationLogged;
     private volatile boolean chromeHookInstalled;
     private volatile boolean clipboardHookInstalled;
     private volatile Handler systemHandler;
     private volatile HandlerThread systemWorkerThread;
+    private volatile ContentObserver configurationObserver;
+    private final Runnable configurationChanged = () -> refreshRecoveryConfiguration("notification", true);
     private volatile Field activityStarterRequestField;
     private volatile Field activityStarterIntentField;
     private final ConcurrentHashMap<String, Long> pendingRecoveries = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> replayTokens = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Long> clipboardEvents = new ConcurrentHashMap<>();
+    private final BoundedExpiringDeduplicator clipboardEvents =
+            new BoundedExpiringDeduplicator(CLIPBOARD_EVENT_DEDUPLICATION_MILLIS, 128);
     private final ConcurrentHashMap<String, Long> nativeBridgeTransactions = new ConcurrentHashMap<>();
     /** Prevent the Android 16 legacy observer from launching the same link after native capture. */
     private final ConcurrentHashMap<String, Long> nativeBridgeHandoffs = new ConcurrentHashMap<>();
@@ -172,7 +180,7 @@ public final class IceBridgeModule extends XposedModule {
                         // resultTo and Activity token to complete the SDK handshake.
                         return chain.proceed();
                     }
-                    Intent nativeBridge = buildNativeAutoOpenBridge(original, "interceptor");
+                    Intent nativeBridge = buildNativeAutoOpenBridge(original, userId, "interceptor");
                     if (nativeBridge != null) {
                         log(4, TAG, "native link redirected: target="
                                 + nativeBridge.getStringExtra(EXTRA_TARGET_PACKAGE));
@@ -236,13 +244,13 @@ public final class IceBridgeModule extends XposedModule {
                             // Keep this callback lock-safe: identify values already in memory and
                             // replace only a recognized WebView link with our foreground trampoline.
                             // No package query, provider, root, IceBox, or Activity launch runs here.
-                            Intent bridge = buildNativeAutoOpenBridge(original, "activity_starter");
+                            Intent bridge = buildNativeAutoOpenBridge(original, userId, "activity_starter");
                             if (bridge == null) {
                                 // If ActivityStartInterceptor already replaced its local argument,
                                 // mRequest still contains the original WeChat Intent. Reuse that
                                 // exact bridge here; otherwise ActivityStarter would continue with
                                 // the original request and open X/Bilibili a second time.
-                                bridge = consumeNativeBridgeReplacement(original);
+                                bridge = consumeNativeBridgeReplacement(original, userId);
                             }
                             if (bridge != null) {
                                 // Keep the framework request's Intent isolated from the source
@@ -283,6 +291,7 @@ public final class IceBridgeModule extends XposedModule {
                 || !configuration.paymentSdkBridge) {
             return false;
         }
+        if (!matchesSnapshotUser(configuration, userId)) return false;
         PaymentSdkBridgeResolver.Candidate candidate = PaymentSdkBridgeResolver.resolve(intent);
         if (candidate == null || !candidate.prewarmOnly
                 || !PaymentSdkBridgeResolver.ALIPAY_PACKAGE.equals(candidate.targetPackage)) {
@@ -397,10 +406,12 @@ public final class IceBridgeModule extends XposedModule {
         return intent.getComponent().getClassName().startsWith("com.alipay.sdk.app.");
     }
 
-    private Intent buildNativeAutoOpenBridge(Intent original, String hookName) {
+    private Intent buildNativeAutoOpenBridge(Intent original, int userId, String hookName) {
         if (original == null) {
             return null;
         }
+        RecoveryConfiguration configuration = currentRecoveryConfiguration();
+        if (!matchesSnapshotUser(configuration, userId)) return null;
         // Only bypass the Intent that IceBridge itself replays. Do not apply a target-wide
         // cooldown here: an app may be frozen again shortly after the first handoff, and a new
         // user click must still be able to wake it. This explicit marker is the loop guard for
@@ -413,7 +424,6 @@ public final class IceBridgeModule extends XposedModule {
         // Do not use the old boolean marker as a permanent guard. Some source apps recycle
         // their Intent object, which made every later tap on the same URL disappear. Only the
         // one-time UUID above identifies an IceBridge replay.
-        RecoveryConfiguration configuration = currentRecoveryConfiguration();
         if (!configuration.available || !configuration.enabled || !configuration.autoOpenLinks) {
             return null;
         }
@@ -428,15 +438,18 @@ public final class IceBridgeModule extends XposedModule {
         boolean directIntent = false;
         boolean prewarmOnly = false;
         String bridgeSource = "unknown";
+        String conversion = LinkRuleEntry.CONVERSION_NONE;
         if (captured != null) {
             rawUrl = captured.url;
             bridgeSource = captured.source;
             try {
                 Uri uri = Uri.parse(rawUrl);
-                List<String> candidates = CustomSchemeTargetResolver.findTargetPackagesForUri(
-                        uri.getScheme(), uri.getHost(), configuration.onlineHostCandidates);
-                target = NativeBridgePolicy.selectCandidate(
-                        candidates, configuration.frozenPackages);
+                List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(configuration.scopedRules,
+                        captured.sourcePackage, uri.getHost());
+                List<String> candidates = ScopedRuleResolver.targetPackages(matches);
+                LinkRuleEntry selected = ScopedRuleResolver.selectFrozenRule(matches, configuration.frozenPackages);
+                target = selected == null ? null : selected.targetPackage;
+                conversion = selected == null ? LinkRuleEntry.CONVERSION_NONE : selected.urlConversion;
                 log(4, TAG, "native target candidates: host=" + uri.getHost()
                         + ", candidates=" + candidates
                         + ", selected=" + target
@@ -526,7 +539,7 @@ public final class IceBridgeModule extends XposedModule {
                 : (captured.sourcePackage == null ? packageOf(original) : captured.sourcePackage);
         String sourceActivity = captured == null ? componentOf(original)
                 : captured.sourceActivity;
-        if (!claimNativeBridgeTransaction(rawUrl, target, sourcePackage, sourceActivity, hookName)) {
+        if (!claimNativeBridgeTransaction(rawUrl, target, sourcePackage, sourceActivity, userId, hookName)) {
             return null;
         }
         // The saved source Intent must carry the loop guard: if we deliberately replay it for an
@@ -547,6 +560,8 @@ public final class IceBridgeModule extends XposedModule {
                 .putExtra(EXTRA_NATIVE_DIRECT_INTENT, directIntent)
                 .putExtra(EXTRA_NATIVE_PREWARM_ONLY, prewarmOnly)
                 .putExtra(EXTRA_NATIVE_BRIDGE_SOURCE, bridgeSource)
+                .putExtra(EXTRA_USER_ID, userId)
+                .putExtra("rule_conversion", conversion)
                 .putExtra(EXTRA_SOURCE_PACKAGE, sourcePackage)
                 .putExtra(EXTRA_SOURCE_ACTIVITY, sourceActivity)
                 .putExtra(EXTRA_TARGET_PACKAGE, target)
@@ -561,26 +576,27 @@ public final class IceBridgeModule extends XposedModule {
         }
         // Only the interceptor needs this hand-off. When its local argument is replaced, the
         // enclosing ActivityStarter still owns the old Intent and will call this method again.
-        markNativeBridgeHandoff(rawUrl, target, sourcePackage, sourceActivity);
+        markNativeBridgeHandoff(rawUrl, target, sourcePackage, sourceActivity, userId);
         if ("interceptor".equals(hookName)) {
-            rememberNativeBridgeReplacement(original, bridge);
+            rememberNativeBridgeReplacement(original, bridge, userId);
         }
         return bridge;
     }
 
-    private void rememberNativeBridgeReplacement(Intent original, Intent bridge) {
+    private void rememberNativeBridgeReplacement(Intent original, Intent bridge, int userId) {
         if (original == null || bridge == null) return;
         long now = SystemClock.elapsedRealtime();
         pruneNativeBridgeReplacements(now);
-        String fingerprint = sourceFingerprint(original);
+        String fingerprint = userId + ":" + sourceFingerprint(original);
         nativeBridgeReplacements.put(fingerprint,
                 new NativeBridgeReplacement(new Intent(bridge), now, fingerprint));
     }
 
-    private Intent consumeNativeBridgeReplacement(Intent original) {
+    private Intent consumeNativeBridgeReplacement(Intent original, int userId) {
         if (original == null) return null;
+        if (!matchesSnapshotUser(currentRecoveryConfiguration(), userId)) return null;
         long now = SystemClock.elapsedRealtime();
-        String fingerprint = sourceFingerprint(original);
+        String fingerprint = userId + ":" + sourceFingerprint(original);
         NativeBridgeReplacement replacement = nativeBridgeReplacements.remove(fingerprint);
         if (replacement == null) {
             pruneNativeBridgeReplacements(now);
@@ -629,20 +645,20 @@ public final class IceBridgeModule extends XposedModule {
     }
 
     private void markNativeBridgeHandoff(String url, String targetPackage,
-                                         String sourcePackage, String sourceActivity) {
-        String key = nativeBridgeHandoffKey(url, targetPackage, sourcePackage, sourceActivity);
+                                         String sourcePackage, String sourceActivity, int userId) {
+        String key = userId + ":" + nativeBridgeHandoffKey(url, targetPackage, sourcePackage, sourceActivity);
         long now = SystemClock.elapsedRealtime();
         nativeBridgeHandoffs.put(key, now);
         pruneNativeBridgeHandoffs(now);
     }
 
-    private boolean isNativeBridgeHandoffRecent(Intent original, String targetPackage) {
+    private boolean isNativeBridgeHandoffRecent(Intent original, String targetPackage, int userId) {
         if (original == null || targetPackage == null) return false;
         String url = original.getDataString();
         if (url == null) url = IntentUrlExtractor.findEmbeddedUrl(original.getExtras());
         String sourcePackage = packageOf(original);
         String sourceActivity = componentOf(original);
-        String key = nativeBridgeHandoffKey(url, targetPackage, sourcePackage, sourceActivity);
+        String key = userId + ":" + nativeBridgeHandoffKey(url, targetPackage, sourcePackage, sourceActivity);
         Long previous = nativeBridgeHandoffs.get(key);
         long now = SystemClock.elapsedRealtime();
         if (previous == null) return false;
@@ -674,8 +690,8 @@ public final class IceBridgeModule extends XposedModule {
 
     private boolean claimNativeBridgeTransaction(String url, String targetPackage,
                                                  String sourcePackage, String sourceActivity,
-                                                 String hookName) {
-        String key = (url == null ? "" : url)
+                                                  int userId, String hookName) {
+        String key = userId + ":" + (url == null ? "" : url)
                 + "|" + (targetPackage == null ? "" : targetPackage)
                 + "|" + (sourcePackage == null ? "" : sourcePackage)
                 + "|" + (sourceActivity == null ? "" : sourceActivity);
@@ -921,6 +937,7 @@ public final class IceBridgeModule extends XposedModule {
         worker.postDelayed(new Runnable() {
             @Override
             public void run() {
+                registerConfigurationObserver();
                 RecoveryConfiguration configuration = refreshRecoveryConfiguration("frozen-cache", true);
                 log(4, TAG, "frozen package cache: status=" + configuration.status
                         + ", packages=" + configuration.frozenPackages.size());
@@ -930,6 +947,31 @@ public final class IceBridgeModule extends XposedModule {
                 }
             }
         }, delayMillis);
+    }
+
+    /** Provider access and observer setup stay on the worker, outside Activity/clipboard locks. */
+    private void registerConfigurationObserver() {
+        if (configurationObserver != null || systemHandler == null) return;
+        try {
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Object thread = activityThread.getMethod("currentActivityThread").invoke(null);
+            Context context = (Context) activityThread.getMethod("getSystemContext").invoke(thread);
+            if (context == null) return;
+            ContentObserver observer = new ContentObserver(systemHandler) {
+                @Override public void onChange(boolean selfChange) {
+                    Handler worker = systemHandler;
+                    if (worker == null) return;
+                    worker.removeCallbacks(configurationChanged);
+                    worker.postDelayed(configurationChanged, 150L);
+                }
+            };
+            context.getContentResolver().registerContentObserver(
+                    Uri.parse("content://" + SystemServerConfigContract.AUTHORITY + "/config"), true, observer);
+            configurationObserver = observer;
+            log(4, TAG, "configuration observer registered");
+        } catch (Throwable error) {
+            log(5, TAG, "configuration observer unavailable: " + error.getClass().getSimpleName());
+        }
     }
 
     private void scheduleNativeActivityLinkCapture(Intent original, int userId) {
@@ -1003,7 +1045,7 @@ public final class IceBridgeModule extends XposedModule {
         }
         String key = userId + ":" + sourcePackage + ":" + targetPackage + ":" + linkKey;
         long now = SystemClock.elapsedRealtime();
-        if (isNativeBridgeHandoffRecent(original, targetPackage)) {
+        if (isNativeBridgeHandoffRecent(original, targetPackage, userId)) {
             log(4, TAG, "legacy recovery skipped: native bridge already claimed target="
                     + targetPackage);
             return;
@@ -1017,7 +1059,7 @@ public final class IceBridgeModule extends XposedModule {
             try {
                 // Native capture can win after this recovery was queued but before the worker
                 // runs. Check again here so the legacy path cannot thaw/open the same request.
-                if (isNativeBridgeHandoffRecent(original, targetPackage)) {
+                if (isNativeBridgeHandoffRecent(original, targetPackage, userId)) {
                     log(4, TAG, "legacy recovery worker skipped: native bridge already claimed target="
                             + targetPackage);
                     return;
@@ -1077,7 +1119,7 @@ public final class IceBridgeModule extends XposedModule {
 
     private void launchRecoveredTargetFromSystem(Intent original, String targetPackage, int userId,
                                                  boolean playStoreFallback) {
-        if (isNativeBridgeHandoffRecent(original, targetPackage)) {
+        if (isNativeBridgeHandoffRecent(original, targetPackage, userId)) {
             log(4, TAG, "legacy recovery launch skipped: native bridge already claimed target="
                     + targetPackage);
             return;
@@ -1143,7 +1185,24 @@ public final class IceBridgeModule extends XposedModule {
     }
 
     private RecoveryConfiguration currentRecoveryConfiguration() {
-        return recoveryConfiguration;
+        RecoveryConfiguration current = recoveryConfiguration;
+        if (current.available && !SnapshotCachePolicy.isUsable(
+                lastSuccessfulRecoveryConfigurationMillis, SystemClock.elapsedRealtime())) {
+            if (!expiredConfigurationLogged) {
+                expiredConfigurationLogged = true;
+                log(5, TAG, "configuration expired; preserving original requests until refresh succeeds");
+            }
+            return RecoveryConfiguration.unavailable("snapshot-expired");
+        }
+        return current;
+    }
+
+    private boolean matchesSnapshotUser(RecoveryConfiguration configuration, int userId) {
+        if (!configuration.available) return false;
+        if (SnapshotCachePolicy.matchesUser(configuration.userId, userId)) return true;
+        log(4, TAG, "request skipped: snapshot-user=" + configuration.userId
+                + ", request-user=" + userId + ", reason=unsupported-user");
+        return false;
     }
 
     private RecoveryConfiguration refreshRecoveryConfiguration(String source, boolean force) {
@@ -1161,6 +1220,7 @@ public final class IceBridgeModule extends XposedModule {
             recoveryConfiguration = loaded;
             recoveryConfigurationFailureCount = 0;
             lastSuccessfulRecoveryConfigurationMillis = now;
+            expiredConfigurationLogged = false;
             log(4, TAG, "resolve recovery configuration: source=" + source
                     + ", state=available"
                     + ", status=" + loaded.status
@@ -1180,11 +1240,13 @@ public final class IceBridgeModule extends XposedModule {
             long age = lastSuccessfulRecoveryConfigurationMillis <= 0L
                     ? -1L : now - lastSuccessfulRecoveryConfigurationMillis;
             log(5, TAG, "resolve recovery configuration: source=" + source
-                    + ", state=stale-cache"
+                    + ", state=" + (SnapshotCachePolicy.isUsable(lastSuccessfulRecoveryConfigurationMillis, now)
+                    ? "stale-cache" : "expired-cache")
                     + ", status=" + loaded.status
                     + ", failures=" + recoveryConfigurationFailureCount
                     + ", cacheAgeMs=" + age);
-            return current;
+            return SnapshotCachePolicy.isUsable(lastSuccessfulRecoveryConfigurationMillis, now)
+                    ? current : RecoveryConfiguration.unavailable("snapshot-expired");
         }
 
         recoveryConfiguration = loaded;
@@ -1224,7 +1286,7 @@ public final class IceBridgeModule extends XposedModule {
             return parsed.available
                     ? RecoveryConfiguration.available(parsed.recoveryEnabled, parsed.autoOpenLinks,
                     parsed.nativeLinkCapture, parsed.clipboardAutoOpen, parsed.paymentSdkBridge,
-                    parsed.frozenPackages, parsed.onlineHostRules)
+                    parsed.frozenPackages, parsed.onlineHostRules, parsed.userId)
                     : RecoveryConfiguration.unavailable(parsed.status);
         } catch (Throwable error) {
             return RecoveryConfiguration.unavailable("provider-call-" + error.getClass().getSimpleName());
@@ -1251,13 +1313,15 @@ public final class IceBridgeModule extends XposedModule {
         final String status;
         final Set<String> frozenPackages;
         final String[] onlineHostRules;
+        final List<LinkRuleEntry> scopedRules;
+        final int userId;
         /** Parsed once when the immutable configuration snapshot is published. */
         final Map<String, List<String>> onlineHostCandidates;
 
         private RecoveryConfiguration(boolean available, boolean enabled, boolean autoOpenLinks,
                                       boolean nativeLinkCapture, boolean clipboardAutoOpen,
                                       boolean paymentSdkBridge, String status,
-                                      Set<String> frozenPackages, String[] onlineHostRules) {
+                                      Set<String> frozenPackages, String[] onlineHostRules, int userId) {
             this.available = available;
             this.enabled = enabled;
             this.autoOpenLinks = autoOpenLinks;
@@ -1266,22 +1330,32 @@ public final class IceBridgeModule extends XposedModule {
             this.paymentSdkBridge = paymentSdkBridge;
             this.status = status;
             this.frozenPackages = frozenPackages;
-            this.onlineHostRules = onlineHostRules == null ? new String[0] : onlineHostRules;
-            this.onlineHostCandidates = OnlineLinkRuleRepository.parseSystemServerCandidateEntries(this.onlineHostRules);
+            this.onlineHostRules = onlineHostRules == null ? new String[0] : onlineHostRules.clone();
+            this.scopedRules = ScopedRuleResolver.decode(this.onlineHostRules);
+            this.userId = userId;
+            // Retained for inactive legacy paths: they have no trustworthy source, so wildcard only.
+            Map<String, List<String>> wildcard = new java.util.LinkedHashMap<>();
+            for (LinkRuleEntry entry : scopedRules) {
+                if (!"*".equals(entry.sourcePackage)) continue;
+                List<String> packages = wildcard.get(entry.host);
+                if (packages == null) { packages = new java.util.ArrayList<>(); wildcard.put(entry.host, packages); }
+                if (!packages.contains(entry.targetPackage)) packages.add(entry.targetPackage);
+            }
+            this.onlineHostCandidates = Collections.unmodifiableMap(wildcard);
         }
 
         static RecoveryConfiguration available(boolean enabled, boolean autoOpenLinks,
                                                boolean nativeLinkCapture, boolean clipboardAutoOpen,
                                                boolean paymentSdkBridge, Set<String> frozenPackages,
-                                               String[] onlineHostRules) {
+                                               String[] onlineHostRules, int userId) {
             return new RecoveryConfiguration(true, enabled, autoOpenLinks, nativeLinkCapture,
                     clipboardAutoOpen, paymentSdkBridge, SystemServerConfigContract.STATUS_OK,
-                    frozenPackages == null ? Collections.emptySet() : frozenPackages, onlineHostRules);
+                    frozenPackages == null ? Collections.emptySet() : frozenPackages, onlineHostRules, userId);
         }
 
         static RecoveryConfiguration unavailable(String status) {
             return new RecoveryConfiguration(false, false, false, false, false, false, status,
-                    Collections.emptySet(), new String[0]);
+                    Collections.emptySet(), new String[0], -1);
         }
     }
 
@@ -1612,22 +1686,22 @@ public final class IceBridgeModule extends XposedModule {
             log(4, TAG, "clipboard skipped: user unknown");
             return;
         }
-        String key = userId + ":" + raw;
+        RecoveryConfiguration configuration = currentRecoveryConfiguration();
+        if (!matchesSnapshotUser(configuration, userId) || !configuration.enabled
+                || !configuration.autoOpenLinks || !configuration.clipboardAutoOpen) return;
+        String key = BoundedExpiringDeduplicator.fingerprint(userId, raw);
         long now = SystemClock.elapsedRealtime();
-        Long previous = clipboardEvents.put(key, now);
-        if (previous != null && now - previous < CLIPBOARD_EVENT_DEDUPLICATION_MILLIS) {
+        if (!clipboardEvents.claim(key, now)) {
             log(4, TAG, "clipboard event coalesced: user=" + userId);
             return;
         }
-        worker.post(() -> {
-            try { observeClipboard(raw, userId); }
-            finally { clipboardEvents.remove(key, now); }
-        });
+        worker.post(() -> observeClipboard(raw, userId));
     }
 
     /** Runs off ClipboardService's lock; it only dispatches an explicit event to the app process. */
     private void observeClipboard(String raw, int userId) {
         RecoveryConfiguration configuration = currentRecoveryConfiguration();
+        if (!matchesSnapshotUser(configuration, userId)) return;
         if (!configuration.available) {
             log(4, TAG, "clipboard skipped: configuration_unavailable");
             return;
@@ -1664,10 +1738,10 @@ public final class IceBridgeModule extends XposedModule {
             log(4, TAG, "clipboard skipped: not_http_url");
             return;
         }
-        List<String> candidates = CustomSchemeTargetResolver.findTargetPackagesForUri(
-                scheme, host, configuration.onlineHostCandidates);
-        String target = NativeBridgePolicy.selectCandidate(
-                candidates, configuration.frozenPackages);
+        List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(configuration.scopedRules, "*", host);
+        List<String> candidates = ScopedRuleResolver.targetPackages(matches);
+        LinkRuleEntry selected = ScopedRuleResolver.selectFrozenRule(matches, configuration.frozenPackages);
+        String target = selected == null ? null : selected.targetPackage;
         if (target == null) {
             log(4, TAG, "clipboard skipped: no_rule host=" + host);
             return;
@@ -1678,10 +1752,10 @@ public final class IceBridgeModule extends XposedModule {
                 + (configuration.frozenPackages != null
                 && configuration.frozenPackages.contains(target))
                 + ", user=" + userId);
-        launchClipboardBridge(uri, target, userId);
+        launchClipboardBridge(uri, target, userId, selected.urlConversion);
     }
     /** system_server starts the same foreground bridge used for tapped links, avoiding Android 16 BAL. */
-    private void launchClipboardBridge(Uri uri, String targetPackage, int userId) {
+    private void launchClipboardBridge(Uri uri, String targetPackage, int userId, String conversion) {
         try {
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
             Object thread = activityThread.getMethod("currentActivityThread").invoke(null);
@@ -1705,6 +1779,8 @@ public final class IceBridgeModule extends XposedModule {
                     .putExtra(EXTRA_NATIVE_DIRECT_INTENT, false)
                     .putExtra(EXTRA_NATIVE_PREWARM_ONLY, false)
                     .putExtra(EXTRA_NATIVE_BRIDGE_SOURCE, "clipboard")
+                    .putExtra(EXTRA_USER_ID, userId)
+                    .putExtra("rule_conversion", conversion)
                     .putExtra(EXTRA_TARGET_PACKAGE, targetPackage)
                     .putExtra(EXTRA_NATIVE_LINK_URL, uri.toString())
                     .putExtra(EXTRA_ORIGINAL_INTENT, source)

@@ -12,8 +12,37 @@ import java.util.Set;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNull;
 
 public class RuleConfigRepositoryTest {
+    @Test public void wireBoundsRejectOversizedSourceHostAndWildcardTarget() {
+        String longSource = "com." + repeat('a', 252);
+        String longHost = repeat('a', 125) + ".com";
+        assertFalse(RuleConfigRepository.isValidRulePackage(longSource));
+        assertNull(RuleConfigRepository.sanitizeForTransfer(new LinkRuleEntry(longSource,
+                "example.com", "com.example.app", "manual", "none", "")));
+        assertNull(RuleConfigRepository.sanitizeForTransfer(new LinkRuleEntry("*",
+                longHost, "com.example.app", "manual", "none", "")));
+        assertNull(RuleConfigRepository.sanitizeForTransfer(new LinkRuleEntry("*",
+                "example.com", "*", "manual", "none", "")));
+    }
+
+    @Test public void badLegacyEntriesDoNotPoisonValidWireSnapshot() {
+        String json = "[{\"sourcePackage\":\"com." + repeat('a', 252)
+                + "\",\"host\":\"example.com\",\"package\":\"com.example.bad\",\"source\":\"manual\"},"
+                + "{\"sourcePackage\":\"*\",\"host\":\"" + repeat('a', 125)
+                + ".com\",\"package\":\"com.example.bad\",\"source\":\"manual\"},"
+                + "{\"sourcePackage\":\"*\",\"host\":\"example.com\",\"package\":\"*\",\"source\":\"manual\"},"
+                + "{\"sourcePackage\":\"com.tencent.mm\",\"host\":\"example.com\","
+                + "\"package\":\"com.example.good\",\"source\":\"manual\"}]";
+        List<LinkRuleEntry> entries = RuleConfigRepository.parseRuleEntries(json);
+        assertEquals(1, entries.size());
+        assertEquals("com.example.good", ScopedRuleResolver.decode(ScopedRuleResolver.encode(entries)).get(0).targetPackage);
+    }
+
+    private static String repeat(char value, int count) {
+        char[] result = new char[count]; java.util.Arrays.fill(result, value); return new String(result);
+    }
     @Test
     public void manualRulesPrecedeOnlineRules() {
         Map<String, List<String>> manual = new LinkedHashMap<>();

@@ -75,6 +75,8 @@ tools/icebridge-backup-pre-rollback-0.0.73/
 /.cxx/
 /.externalNativeBuild/
 *.hprof
+__pycache__/
+*.pyc
 
 # Historical one-off UI captures and local investigation output
 /bridge-settings-056.png

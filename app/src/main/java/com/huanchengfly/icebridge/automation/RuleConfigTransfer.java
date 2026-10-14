@@ -83,7 +83,7 @@ public final class RuleConfigTransfer {
             if (note == null) note = "";
             LinkRuleEntry entry = manualEntry(new LinkRuleEntry(sourcePackage, host, targetPackage,
                     LinkRuleEntry.SOURCE_MANUAL, conversion, note));
-            if (entry == null) throw new TransferException("规则包含无效的域名、包名或转换配置");
+            if (entry == null) throw new TransferException("规则无效：域名最多 128 字符，包名最多 255 字符且目标不能是 *，转换类型必须受支持");
             String key = key(entry);
             if (!unique.containsKey(key)) {
                 unique.put(key, entry);

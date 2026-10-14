@@ -9,6 +9,26 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 public class RuleConfigTransferTest {
+    @Test(expected = RuleConfigTransfer.TransferException.class)
+    public void rejectsSourceLongerThanWireLimit() throws Exception {
+        char[] longPart = new char[252]; java.util.Arrays.fill(longPart, 'a');
+        RuleConfigTransfer.importJson("{\"format\":\"icebridge-rules\",\"version\":1,\"rules\":[{"
+                + "\"sourcePackage\":\"com." + new String(longPart)
+                + "\",\"host\":\"example.com\",\"package\":\"com.example.app\"}]}");
+    }
+
+    @Test(expected = RuleConfigTransfer.TransferException.class)
+    public void rejectsHostLongerThanWireLimit() throws Exception {
+        char[] longPart = new char[125]; java.util.Arrays.fill(longPart, 'a');
+        RuleConfigTransfer.importJson("{\"format\":\"icebridge-rules\",\"version\":1,\"rules\":[{"
+                + "\"host\":\"" + new String(longPart) + ".com\",\"package\":\"com.example.app\"}]}");
+    }
+
+    @Test(expected = RuleConfigTransfer.TransferException.class)
+    public void rejectsWildcardTarget() throws Exception {
+        RuleConfigTransfer.importJson("{\"format\":\"icebridge-rules\",\"version\":1,\"rules\":[{"
+                + "\"host\":\"example.com\",\"package\":\"*\"}]}");
+    }
     @Test
     public void exportContainsVersionedManualRulesOnly() throws Exception {
         String json = RuleConfigTransfer.exportJson(Arrays.asList(

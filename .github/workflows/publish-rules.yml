@@ -1,0 +1,34 @@
+name: Publish owned online rules
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-online-rules
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Publish only the reviewed default branch, never arbitrary application branches.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate immutable snapshot
+        run: |
+          python tools/rules/manage_rules.py validate
+          python tools/rules/manage_rules.py build
+          python -m unittest discover -s tools/rules -p 'test_*.py'
+          test -z "$(git status --porcelain --untracked-files=all -- online-rules)"
+      - name: Publish only the rules subtree
+        run: |
+          rules_commit=$(git subtree split --prefix=online-rules HEAD)
+          git push origin "${rules_commit}:refs/heads/rules"
