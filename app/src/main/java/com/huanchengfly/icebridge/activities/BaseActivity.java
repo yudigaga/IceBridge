@@ -22,6 +22,8 @@ public abstract class BaseActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
+        com.huanchengfly.icebridge.ui.theme.ThemeActivityIntegration.beforeCreate(this,
+                !(this instanceof BridgeActivity) && !(this instanceof ShareBridgeActivity));
         super.onCreate(savedInstanceState);
         RecentTaskVisibility.apply(this, LinkAutomationConfig.isBridgeHiddenFromRecents(this));
         if (getLayoutId() != NO_LAYOUT) {
@@ -36,6 +38,12 @@ public abstract class BaseActivity extends AppCompatActivity {
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        com.huanchengfly.icebridge.ui.theme.ThemeActivityIntegration.configurationChanged(this);
     }
 
     @LayoutRes

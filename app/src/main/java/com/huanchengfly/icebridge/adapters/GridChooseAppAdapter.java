@@ -56,14 +56,15 @@ public class GridChooseAppAdapter extends RecyclerView.Adapter<MyViewHolder> {
 
     @Override
     public void onBindViewHolder(@NonNull MyViewHolder holder, int position) {
-        if (position == selectedPos) {
-            holder.itemView.setBackgroundTintList(ColorStateList.valueOf(getContext().getResources().getColor(R.color.colorPrimaryTrans)));
-        } else {
-            holder.itemView.setBackgroundTintList(ColorStateList.valueOf(getContext().getResources().getColor(R.color.white)));
-        }
+        com.huanchengfly.icebridge.ui.theme.ThemeActivityIntegration.LegacyCardColors colors =
+                com.huanchengfly.icebridge.ui.theme.ThemeActivityIntegration.legacyCardColors(getContext(), position == selectedPos);
+        holder.itemView.setBackgroundTintList(ColorStateList.valueOf(colors.background));
         String pkgName = packages.get(position);
         TextView title = holder.getView(R.id.title);
         TextView subtitle = holder.getView(R.id.subtitle);
+        title.setTextColor(colors.title);
+        subtitle.setTextColor(colors.subtitle);
+        com.huanchengfly.icebridge.ui.theme.ThemeActivityIntegration.applyFrozenBadge(holder.getView(R.id.disabled), getContext());
         ImageView icon = holder.getView(R.id.icon);
         holder.itemView.setOnClickListener(v -> {
             int adapterPosition = holder.getAdapterPosition();

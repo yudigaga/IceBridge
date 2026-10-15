@@ -8,7 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.widget.ImageView
-import androidx.activity.compose.setContent
+import com.huanchengfly.icebridge.ui.theme.setIceBridgeContent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -55,7 +56,9 @@ import com.huanchengfly.icebridge.automation.RuleConfigRepository
 import com.huanchengfly.icebridge.automation.RuleConfigTransfer
 import com.huanchengfly.icebridge.automation.RuleEditorValidation
 import com.huanchengfly.icebridge.automation.ScopedRuleResolver
-import top.yukonga.miuix.kmp.basic.Card
+import com.huanchengfly.icebridge.ui.theme.ThemeCard as Card
+import com.huanchengfly.icebridge.ui.theme.CardLevel
+import com.huanchengfly.icebridge.ui.theme.IceBridgeTheme
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
@@ -76,8 +79,8 @@ import java.io.ByteArrayOutputStream
 
 object MiuixRuleConfigScreen {
     @JvmStatic
-    fun install(activity: RuleConfigActivity) = activity.setContent {
-        MiuixTheme { RuleConfigPage(activity) }
+    fun install(activity: RuleConfigActivity) = activity.setIceBridgeContent {
+        IceBridgeTheme { RuleConfigPage(activity) }
     }
 }
 
@@ -646,16 +649,16 @@ private fun TargetRuleEditorDialog(
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                 )
                 if (rows != originalRows) Text("有未保存的修改", fontSize = 13.sp)
-                if (saveError != null) Text(saveError, color = Color(0xFFB3261E), fontSize = 13.sp)
+                if (saveError != null) Text(saveError, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                 rows.forEachIndexed { index, row ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    Card(modifier = Modifier.fillMaxWidth(), level = CardLevel.SMALL) {
                         Column(
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text("\u89c4\u5219 ${index + 1}", fontSize = 15.sp)
                             if (attemptedSave) validations[index].errors.forEach { error ->
-                                Text(error, color = Color(0xFFB3261E), fontSize = 12.sp)
+                                Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                             }
                             TextField(
                                 value = row.sourcePackage,
@@ -771,7 +774,7 @@ private fun RulePreviewDialog(
                             LinkRuleEntry.SOURCE_ONLINE -> "在线"
                             else -> "旧规则"
                         }
-                        Card(Modifier.fillMaxWidth()) {
+                        Card(Modifier.fillMaxWidth(), level = CardLevel.SMALL) {
                             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("${index + 1}. $target", fontSize = 15.sp)
                                 Text(rule.targetPackage, fontSize = 12.sp)
@@ -781,7 +784,7 @@ private fun RulePreviewDialog(
                             }
                         }
                     }
-                }, onFailure = { error -> Text(error.message.orEmpty(), color = Color(0xFFB3261E), fontSize = 13.sp) })
+                }, onFailure = { error -> Text(error.message.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 13.sp) })
             }
         },
         confirmButton = { TextButton(onClick = { attempted = true }) { Text("查看匹配") } },
@@ -823,7 +826,7 @@ private fun EffectiveRulesDialog(
                             else -> "旧规则"
                         }
                         val conversion = if (rule.hasFixedUrlConversion()) "固定 Deep Link" else "保留 HTTP(S) URL"
-                        Card(modifier = Modifier.fillMaxWidth()) {
+                        Card(modifier = Modifier.fillMaxWidth(), level = CardLevel.SMALL) {
                             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(rule.host, fontSize = 15.sp)
                                 Text("$sourceLabel → $targetLabel", fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)

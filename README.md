@@ -17,6 +17,10 @@ HTTP(S) mappings come from manual rules and the project's [owned online rule fee
 
 For setup and the recommended LSPosed scope, see [native link capture](docs/NATIVE_LINK_CAPTURE.md). The default scope is `system` only; no WeChat, QQ, browser, or target-app scope is required. System-side capture observes Activity requests and does not provide visibility into every in-process WebView navigation.
 
+## Appearance
+
+Open **Appearance → Theme and colors** on the home screen to choose a fixed preset or a custom `#RRGGBB` color. Random colors can change daily or on each fresh app launch. Light and dark appearances share the same color family, with separate tones for page backgrounds, medium/small cards, dialogs and controls. See [theme behavior and validation](docs/THEMES.md).
+
 ## Maintain online rules
 
 The initial snapshot extracts the supported declarative subset of `nyehueh/shortx-Fluid_Cloud` into an independently maintained feed. It contains 32 mappings over 22 hosts at revision 1. No upstream scripts are executed or published. [Maintenance instructions and provenance](online-rules/README.md) explain the excluded formats and how to review future upstream candidates.
@@ -49,7 +53,10 @@ For a production release, verify the expected signing identity using Android bui
 
 ```powershell
 ./tools/test-release-validation.ps1
-./tools/verify-release.ps1 -Apk app/build/outputs/apk/release/IceBridge-v0.0.80-release.apk -ExpectedCertificateSha256 $env:ICEBRIDGE_RELEASE_CERT_SHA256
+. ./tools/release-validation.ps1
+$release = Read-ReleaseVersion ./version.properties
+$apk = "app/build/outputs/apk/release/IceBridge-v$($release.versionName)-release.apk"
+./tools/verify-release.ps1 -Apk $apk -ExpectedCertificateSha256 $env:ICEBRIDGE_RELEASE_CERT_SHA256
 ```
 
 `-AllowUnpinnedCertificate` is reserved for the disposable CI test key. Device-only checks and the current validation scope are recorded in [the release checklist](docs/RELEASE_VALIDATION.md).

@@ -1,14 +1,14 @@
 <resources>
-    <style name="AppTheme" parent="Theme.MaterialComponents.Light.NoActionBar">
+    <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="preferenceTheme">@style/PreferenceThemeOverlay.App</item>
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorAccent">@color/colorAccent</item>
-        <item name="android:statusBarColor">@color/white</item>
-        <item name="android:navigationBarColor">@color/white</item>
+        <item name="android:statusBarColor">@color/theme_window_background</item>
+        <item name="android:navigationBarColor">@color/theme_window_background</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:colorBackground">@color/white</item>
+        <item name="android:colorBackground">@color/theme_window_background</item>
         <item name="dialogCornerRadius">8dp</item>
     </style>
 </resources>

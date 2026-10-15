@@ -4,7 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.content.pm.PackageManager
-import androidx.activity.compose.setContent
+import com.huanchengfly.icebridge.ui.theme.setIceBridgeContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -38,7 +38,9 @@ import com.huanchengfly.icebridge.utils.PackageUtil
 import com.huanchengfly.icebridge.utils.RecentTaskVisibility
 import com.huanchengfly.icebridge.utils.Util
 import org.litepal.LitePal
-import top.yukonga.miuix.kmp.basic.Card
+import com.huanchengfly.icebridge.ui.theme.ThemeCard as Card
+import com.huanchengfly.icebridge.ui.theme.CardLevel
+import com.huanchengfly.icebridge.ui.theme.IceBridgeTheme
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.extra.SuperArrow
@@ -46,10 +48,10 @@ import top.yukonga.miuix.kmp.extra.SuperSwitch
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 object MiuixSecondaryScreens {
-    @JvmStatic fun installBridgeSettings(a: BridgePreferencesActivity) = a.setContent { MiuixTheme { RetiredBridgeSettings() } }
-    @JvmStatic fun installEnhanceSettings(a: EnhanceModeActivity) = a.setContent { MiuixTheme { EnhanceSettings(a) } }
-    @JvmStatic fun installPermissionStatus(a: PermissionActivity) = a.setContent { MiuixTheme { PermissionStatus(a) } }
-    @JvmStatic fun installAbout(a: AboutActivity) = a.setContent { MiuixTheme { About(a) } }
+    @JvmStatic fun installBridgeSettings(a: BridgePreferencesActivity) = a.setIceBridgeContent { IceBridgeTheme { RetiredBridgeSettings() } }
+    @JvmStatic fun installEnhanceSettings(a: EnhanceModeActivity) = a.setIceBridgeContent { IceBridgeTheme { EnhanceSettings(a) } }
+    @JvmStatic fun installPermissionStatus(a: PermissionActivity) = a.setIceBridgeContent { IceBridgeTheme { PermissionStatus(a) } }
+    @JvmStatic fun installAbout(a: AboutActivity) = a.setIceBridgeContent { IceBridgeTheme { About(a) } }
 }
 private const val PREFS = "preferences"
 private const val KEY_ENHANCE = "enhance_mode_enabled"

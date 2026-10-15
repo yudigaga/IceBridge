@@ -47,6 +47,7 @@ public abstract class BaseIntroActivity extends AppCompatActivity implements Vie
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        com.huanchengfly.icebridge.ui.theme.ThemeActivityIntegration.beforeCreate(this, true);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_intro);
         nextButton = findViewById(R.id.button_next);

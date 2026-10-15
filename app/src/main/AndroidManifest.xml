@@ -53,6 +53,7 @@
 
         <activity android:name=".activities.EnhanceModeActivity" />
         <activity android:name=".activities.RuleConfigActivity" />
+        <activity android:name=".activities.ThemeSettingsActivity" android:exported="false" />
 
         <activity
             android:name=".activities.MainActivity"

@@ -7,6 +7,7 @@
     tools:class="com.huanchengfly.icebridge.activities.BridgeActivity">
 
     <LinearLayout
+        android:id="@+id/bridge_panel"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_centerInParent="true"
@@ -35,6 +36,7 @@
                 android:src="@mipmap/ic_launcher" />
 
             <TextView
+                android:id="@+id/bridge_arrow"
                 android:layout_width="44dp"
                 android:layout_height="wrap_content"
                 android:gravity="center"

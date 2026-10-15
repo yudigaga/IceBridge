@@ -1,7 +1,7 @@
 package com.huanchengfly.icebridge.ui
 
 import android.content.Intent
-import androidx.activity.compose.setContent
+import com.huanchengfly.icebridge.ui.theme.setIceBridgeContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -29,13 +29,16 @@ import com.huanchengfly.icebridge.activities.EnhanceModeActivity
 import com.huanchengfly.icebridge.activities.MainActivity
 import com.huanchengfly.icebridge.activities.PermissionActivity
 import com.huanchengfly.icebridge.activities.RuleConfigActivity
+import com.huanchengfly.icebridge.activities.ThemeSettingsActivity
 import com.huanchengfly.icebridge.engines.BaseEngine
 import com.huanchengfly.icebridge.engines.EngineManager
 import com.huanchengfly.icebridge.engines.IceBoxEngine
 import com.huanchengfly.icebridge.engines.RootEngine
 import com.huanchengfly.icebridge.engines.RootCommandRunner
 import com.huanchengfly.icebridge.utils.PackageUtil
-import top.yukonga.miuix.kmp.basic.Card
+import com.huanchengfly.icebridge.ui.theme.ThemeCard as Card
+import com.huanchengfly.icebridge.ui.theme.CardLevel
+import com.huanchengfly.icebridge.ui.theme.IceBridgeTheme
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.extra.SuperArrow
@@ -49,7 +52,7 @@ import kotlin.coroutines.resume
 object MiuixMainScreen {
     @JvmStatic
     fun install(activity: MainActivity) {
-        activity.setContent { MiuixTheme { Home(activity) } }
+        activity.setIceBridgeContent { IceBridgeTheme { Home(activity) } }
     }
 }
 
@@ -155,6 +158,14 @@ private fun Home(activity: MainActivity) {
                     title = "\u89c4\u5219\u914d\u7f6e",
                     summary = "\u6309\u5e94\u7528\u7ba1\u7406\u9ed8\u8ba4\u3001\u5728\u7ebf\u548c\u624b\u52a8 URL \u89c4\u5219",
                     onClick = { activity.startActivity(Intent(activity, RuleConfigActivity::class.java)) }
+                )
+            }
+            SectionTitle("外观")
+            Card(modifier = Modifier.fillMaxWidth(), level = CardLevel.SMALL) {
+                SuperArrow(
+                    title = "主题与颜色",
+                    summary = "固定颜色、随机换色与日夜外观",
+                    onClick = { activity.startActivity(Intent(activity, ThemeSettingsActivity::class.java)) }
                 )
             }
             SectionTitle("\u72b6\u6001\u4e0e\u4fe1\u606f")

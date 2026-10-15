@@ -74,7 +74,7 @@ public class ShareBridgeActivity extends BaseActivity {
             recyclerView.setLayoutManager(new GridLayoutManager(this, getSpanCount(resolveInfos.size())));
             GridChooseResolveInfoAdapter appAdapter = new GridChooseResolveInfoAdapter(this, resolveInfos);
             recyclerView.setAdapter(appAdapter);
-            new AlertDialog.Builder(this)
+            AlertDialog pickerDialog = new AlertDialog.Builder(this)
                     .setTitle(R.string.title_select_apps)
                     .setView(recyclerView)
                     //.setCancelable(false)
@@ -83,6 +83,7 @@ public class ShareBridgeActivity extends BaseActivity {
                     })
                     .setOnDismissListener(dialog -> finish())
                     .show();
+            com.huanchengfly.icebridge.ui.theme.ThemeActivityIntegration.applyDialog(pickerDialog);
         }
     }
 

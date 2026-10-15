@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Safe launch/inflation defaults; live surfaces use the selected theme palette. -->
+    <color name="theme_window_background">#FF101218</color>
+    <color name="theme_card_background">#FF222631</color>
+    <color name="text_color_primary">#FFF0F0F6</color>
+    <color name="text_color_secondary">#FFC0C3CD</color>
+    <color name="icon_color">#FFC0C3CD</color>
+    <color name="text_color_disabled">#FF8A8D98</color>
+    <color name="color_shadow">#FF080A10</color>
+    <color name="color_divider">#FF3B3F4A</color>
+    <color name="color_space">#FF181B23</color>
+    <color name="colorPlaceHolder">#FF222631</color>
+</resources>

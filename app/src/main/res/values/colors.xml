@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <color name="theme_window_background">#FFF0F3FA</color>
+    <color name="theme_card_background">#FFFAFBFF</color>
     <color name="colorPrimary">#2979FF</color>
     <color name="colorPrimaryTrans">#552979FF</color>
     <color name="colorPrimaryDark">#2979FF</color>
