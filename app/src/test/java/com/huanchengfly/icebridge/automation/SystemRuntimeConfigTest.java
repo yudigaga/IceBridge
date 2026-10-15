@@ -1,5 +1,9 @@
 package com.huanchengfly.icebridge.automation;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
+
 import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
@@ -175,6 +179,70 @@ public class SystemRuntimeConfigTest {
         SystemRuntimeConfig.State differentSwitch = new SystemRuntimeConfig.State(SCHEMA, 0, 12345, true,
                 false, true, false, true, false, true, false, true, one.encodedRules(), cached);
         assertFalse(SystemRuntimeConfig.fingerprint(one).equals(SystemRuntimeConfig.fingerprint(differentSwitch)));
+    }
+
+    @Test public void oldVersionOneEnvelopeDefaultsThemeWithoutLosingRulesOrOnlineHighWater() throws Exception {
+        String old = bundle(4, BUNDLE_RULE), latest = bundle(5, "");
+        SystemRuntimeConfig.OnlineState online = new SystemRuntimeConfig.OnlineState(latest,
+                hash(latest), old, hash(old), 5, hash(latest), true);
+        SystemRuntimeConfig.State original = state(0, new String[]{RULE, ONLINE}, online);
+        JsonObject legacy = JsonParser.parseString(new String(SystemRuntimeConfig.encode(original),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        legacy.remove("transitSeedColor");
+        legacy.remove("transitAppearance");
+        assertFalse(legacy.has("transitSeedColor"));
+        assertFalse(legacy.has("transitAppearance"));
+        SystemRuntimeConfig.State restored = decode(legacy.toString());
+        assertEquals(ThemePolicy.DEFAULT_SEED_COLOR, restored.transitSeedColor);
+        assertEquals(ThemePolicy.APPEARANCE_SYSTEM, restored.transitAppearance);
+        assertArrayEquals(original.encodedRules(), restored.encodedRules());
+        assertEquals(5, restored.online.highestRevision);
+        assertEquals(hash(latest), restored.online.highestSha256);
+        assertEquals(latest, restored.online.activeRaw);
+        assertEquals(old, restored.online.backupRaw);
+    }
+
+    @Test public void transitThemeRoundTripsAndSurvivesOnlineReplacement() throws Exception {
+        SystemRuntimeConfig.State original = themed(0xff7e57c2, ThemePolicy.APPEARANCE_DARK);
+        SystemRuntimeConfig.State restored = SystemRuntimeConfig.decode(SystemRuntimeConfig.encode(original), 0, SCHEMA);
+        assertEquals(0xff7e57c2, restored.transitSeedColor);
+        assertEquals(ThemePolicy.APPEARANCE_DARK, restored.transitAppearance);
+        String raw = bundle(5, BUNDLE_RULE);
+        SystemRuntimeConfig.State updated = restored.withOnline(new SystemRuntimeConfig.OnlineState(raw,
+                hash(raw), "", "", 5, hash(raw), true), new String[]{RULE, ONLINE}, 45678);
+        assertEquals(restored.transitSeedColor, updated.transitSeedColor);
+        assertEquals(restored.transitAppearance, updated.transitAppearance);
+        assertEquals(5, updated.online.highestRevision);
+    }
+
+    @Test public void transitThemeParticipatesInLogicalConfigFingerprint() throws Exception {
+        SystemRuntimeConfig.State dark = themed(0xff7e57c2, ThemePolicy.APPEARANCE_DARK);
+        assertFalse(SystemRuntimeConfig.fingerprint(dark).equals(SystemRuntimeConfig.fingerprint(
+                themed(0xff2979ff, ThemePolicy.APPEARANCE_DARK))));
+        assertFalse(SystemRuntimeConfig.fingerprint(dark).equals(SystemRuntimeConfig.fingerprint(
+                themed(0xff7e57c2, ThemePolicy.APPEARANCE_LIGHT))));
+        assertEquals(SystemRuntimeConfig.fingerprint(dark), SystemRuntimeConfig.fingerprint(
+                dark.withOnline(dark.online, dark.encodedRules(), 55555)));
+    }
+
+    @Test public void explicitInvalidTransitThemeIsRejectedRatherThanTreatedAsLegacy() throws Exception {
+        rejects(() -> themed(0x7f2979ff, ThemePolicy.APPEARANCE_SYSTEM), "runtime-transit-seed-color");
+        rejects(() -> themed(0xff2979ff, "unknown"), "runtime-transit-appearance");
+        rejects(() -> themed(0xff2979ff, null), "runtime-transit-appearance");
+        String encoded = new String(SystemRuntimeConfig.encode(themed(0xff2979ff,
+                ThemePolicy.APPEARANCE_SYSTEM)), StandardCharsets.UTF_8);
+        rejectsJson(encoded.replace("\"transitAppearance\":\"system\"", "\"transitAppearance\":null"),
+                "runtime-string-transitAppearance");
+        rejectsJson(encoded.replace("\"transitSeedColor\":" + 0xff2979ff,
+                "\"transitSeedColor\":4294967295"), "runtime-transit-seed-color");
+        rejectsJson(encoded.replace("\"transitSeedColor\":" + 0xff2979ff,
+                "\"transitSeedColor\":1.5"), "runtime-integer-transitSeedColor");
+    }
+
+    private static SystemRuntimeConfig.State themed(int seedColor, String appearance) throws IOException {
+        return new SystemRuntimeConfig.State(SCHEMA, 0, 12345, true,
+                true, true, false, true, false, true, false, true,
+                new String[]{RULE}, null, seedColor, appearance);
     }
 
     private static SystemRuntimeConfig.State state(int userId, String[] rules, SystemRuntimeConfig.OnlineState online) throws IOException {

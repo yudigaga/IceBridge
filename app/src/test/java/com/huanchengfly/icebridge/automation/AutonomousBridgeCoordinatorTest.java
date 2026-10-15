@@ -297,6 +297,102 @@ public class AutonomousBridgeCoordinatorTest {
                 SOURCE, "key-0", false, true), rules()).outcome);
     }
 
+    @Test public void progressReportsTheSelectedTargetBeforeThawAndBeforeOpening() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, FROZEN);
+        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
+                SOURCE, "progress", false, true);
+        assertEquals(Outcome.ROUTED, f.worker.execute(request, rules()).outcome);
+        assertEquals(Arrays.asList("THAWING:" + TARGET + ":0:0", "OPENING:" + TARGET + ":1:0"),
+                f.progress);
+        assertSame(request, f.observedRequest);
+    }
+
+    @Test public void thawOnlyAndAutoOpenDisabledDoNotClaimToBeOpening() {
+        for (Kind kind : Arrays.asList(Kind.EXPLICIT, Kind.THAW_ONLY)) {
+            Fixture f = new Fixture();
+            f.packages.put(0, TARGET, FROZEN);
+            assertEquals(Outcome.THAWED, f.worker.execute(request(kind, 0, SOURCE,
+                    "progress", false, false), rules()).outcome);
+            assertEquals(Collections.singletonList("THAWING:" + TARGET + ":0:0"), f.progress);
+        }
+    }
+
+    @Test public void alreadyLaunchableWebTargetReportsOnlyOpening() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, READY);
+        AutonomousBridgeCoordinator.Request<Object> request = new AutonomousBridgeCoordinator.Request<>(
+                Kind.WEB_RULE, 0, SOURCE, "example.com", null, "progress", new Object(), false, true, false);
+        assertEquals(Outcome.ROUTED, f.worker.execute(request, rules()).outcome);
+        assertEquals(Collections.singletonList("OPENING:" + TARGET + ":0:0"), f.progress);
+    }
+
+    @Test public void failedThawAndFailedReadbackNeverReportOpening() {
+        for (boolean failThaw : Arrays.asList(true, false)) {
+            Fixture f = new Fixture();
+            f.packages.put(0, TARGET, FROZEN);
+            if (failThaw) f.packages.failure = "denied";
+            else f.packages.after = FROZEN;
+            assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.EXPLICIT, 0,
+                    SOURCE, "progress", false, true), rules()).outcome);
+            assertEquals(Collections.singletonList("THAWING:" + TARGET + ":0:0"), f.progress);
+            assertEquals(0, f.launcher.launches);
+        }
+    }
+
+    @Test public void rejectedSelectionsAndUnsupportedThawNeverShowProgress() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, FROZEN);
+        f.packages.put(0, OTHER, FROZEN);
+        f.packages.put(0, SELF, FROZEN);
+        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.WEB_RULE, 0,
+                SOURCE, "ambiguous", false, true), Arrays.asList(rule("*", TARGET, "online", "none"),
+                rule("*", OTHER, "online", "none"))).outcome);
+        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.WEB_RULE, 0,
+                SOURCE, "self", false, true), Collections.singletonList(
+                rule("*", SELF, "manual", "none"))).outcome);
+        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.WEB_RULE, 0,
+                SOURCE, "unmatched", false, true), Collections.emptyList()).outcome);
+        f.packages.put(0, TARGET, State.known(true, 3, false, false, true));
+        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.EXPLICIT, 0,
+                SOURCE, "suspended", false, true), rules()).outcome);
+        f.packages.put(0, TARGET, FROZEN);
+        f.packages.enable = false;
+        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.EXPLICIT, 0,
+                SOURCE, "unsupported", false, true), rules()).outcome);
+        assertTrue(f.progress.isEmpty());
+    }
+
+    @Test public void successfulDuplicateDoesNotRepeatProgress() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, FROZEN);
+        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
+                SOURCE, "progress", false, true);
+        assertEquals(Outcome.ROUTED, f.worker.execute(request, rules()).outcome);
+        int before = f.progress.size();
+        assertEquals(Outcome.DUPLICATE, f.worker.execute(request, rules()).outcome);
+        assertEquals(2, before);
+        assertEquals(before, f.progress.size());
+    }
+
+    @Test public void observerExceptionsDoNotChangeRoutingOrFallback() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, FROZEN);
+        f.failProgress = true;
+        assertEquals(Outcome.ROUTED, f.worker.execute(request(Kind.EXPLICIT, 0, SOURCE,
+                "progress", true, true), rules()).outcome);
+        assertEquals(2, f.progress.size());
+        assertEquals(1, f.launcher.launches);
+        assertEquals(0, f.launcher.fallbacks);
+        Fixture failed = new Fixture();
+        failed.packages.put(0, TARGET, FROZEN);
+        failed.launcher.failLaunch = true;
+        failed.failProgress = true;
+        assertEquals(Outcome.PASSTHROUGH, failed.worker.execute(request(Kind.EXPLICIT, 0,
+                SOURCE, "progress", true, true), rules()).outcome);
+        assertEquals(1, failed.launcher.fallbacks);
+    }
+
     private static List<LinkRuleEntry> rules() {
         return Collections.singletonList(rule("*", TARGET, "online", "none"));
     }
@@ -315,8 +411,15 @@ public class AutonomousBridgeCoordinatorTest {
         long now;
         final Packages packages = new Packages();
         final Launches launcher = new Launches();
+        final List<String> progress = new ArrayList<>();
+        AutonomousBridgeCoordinator.Request<Object> observedRequest;
+        boolean failProgress;
         final AutonomousBridgeCoordinator<Object> worker = new AutonomousBridgeCoordinator<>(
-                SELF, packages, launcher, () -> now);
+                SELF, packages, launcher, () -> now, (request, target, stage) -> {
+                    observedRequest = request;
+                    progress.add(stage + ":" + target + ":" + packages.thaws.size() + ":" + launcher.launches);
+                    if (failProgress) throw new IllegalStateException("progress-failed");
+                });
     }
 
     private static final class Packages implements AutonomousBridgeCoordinator.PackageAccess {

@@ -38,6 +38,7 @@ import com.huanchengfly.icebridge.android16.ResolvedLaunch;
 import com.huanchengfly.icebridge.android16.SystemServerPackageStateProbe;
 import com.huanchengfly.icebridge.android16.SystemAutonomousRuntime;
 import com.huanchengfly.icebridge.android16.SystemAutonomousCapture;
+import com.huanchengfly.icebridge.android16.SystemTargetWindowObserver;
 import com.huanchengfly.icebridge.android16.AtmsBinderSignatureResolver;
 import com.huanchengfly.icebridge.android16.SystemLaunchPreflight;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
@@ -113,6 +114,9 @@ public final class IceBridgeModule extends XposedModule {
     private volatile SystemAutonomousRuntime autonomousRuntime;
     private volatile boolean activityInterceptionReady;
     private volatile boolean activityPreflightReady;
+    private volatile boolean targetWindowObservationReady;
+    private volatile ClassLoader systemServerClassLoader;
+    private final SystemTargetWindowObserver targetWindows = new SystemTargetWindowObserver();
     private volatile SystemRuntimeConfig.State compatibilityState;
     private volatile RecoveryConfiguration compatibilityConfiguration;
     private final BoundedExpiringDeduplicator autonomousObservations =
@@ -150,6 +154,7 @@ public final class IceBridgeModule extends XposedModule {
 
     @Override
     public void onSystemServerStarting(XposedModuleInterface.SystemServerStartingParam param) {
+        systemServerClassLoader = param.getClassLoader();
         packageStateProbe = SystemServerPackageStateProbe.create();
         ensureSystemWorker();
         scheduleRecoveryConfigurationRefresh(2_000L);
@@ -160,6 +165,7 @@ public final class IceBridgeModule extends XposedModule {
         // ClipboardService may hold a global system lock. The hook only snapshots plain text,
         // returns through the original method, then posts all parsing and app dispatch work.
         installSystemClipboardHook(param.getClassLoader());
+        installTargetWindowHooks(param.getClassLoader());
     }
 
     @Override
@@ -167,6 +173,62 @@ public final class IceBridgeModule extends XposedModule {
         String packageName = param.getPackageName();
         if (PACKAGE_NAME.equals(packageName)) {
             installActivationHook(param.getClassLoader());
+        }
+    }
+
+    /** After-hooks snapshot only launch identity. Window operations run on the system UI thread. */
+    private void installTargetWindowHooks(ClassLoader loader) {
+        try {
+            Class<?> recordClass = loader.loadClass("com.android.server.wm.ActivityRecord");
+            Method drawn = SystemTargetWindowObserver.zeroArg(recordClass, "onWindowsDrawn");
+            if (drawn == null) { log(5, TAG, "transit UI unavailable: target draw callback not found"); return; }
+            hook(drawn).setId("icebridge:transit-target-drawn")
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain -> {
+                        Object result = chain.proceed();
+                        postTargetWindow(chain.getThisObject(), false);
+                        return result;
+                    });
+            targetWindowObservationReady = true;
+            Method resumed = SystemTargetWindowObserver.zeroArg(recordClass, "completeResumeLocked");
+            if (resumed != null) hook(resumed).setId("icebridge:transit-target-resumed")
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain -> {
+                        Object result = chain.proceed();
+                        postTargetWindow(chain.getThisObject(), true);
+                        return result;
+                    });
+            for (Method method : recordClass.getDeclaredMethods()) {
+                if (!"deliverNewIntentLocked".equals(method.getName())) continue;
+                boolean containsIntent = false;
+                for (Class<?> type : method.getParameterTypes()) if (type == Intent.class) containsIntent = true;
+                if (!containsIntent) continue;
+                method.setAccessible(true);
+                hook(method).setId("icebridge:transit-new-intent-" + method.getParameterTypes().length)
+                        .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain -> {
+                            Object result = chain.proceed();
+                            SystemAutonomousRuntime runtime = autonomousRuntime;
+                            if (runtime != null && runtime.observesTargetWindows()) {
+                                for (Object arg : chain.getArgs().toArray()) {
+                                    if (arg instanceof Intent) targetWindows.onNewIntent(chain.getThisObject(), (Intent) arg);
+                                }
+                                postTargetWindow(chain.getThisObject(), true);
+                            }
+                            return result;
+                        });
+            }
+            log(4, TAG, "transit target window hooks installed");
+        } catch (Throwable error) {
+            log(5, TAG, "transit target window hook limited: " + error.getClass().getSimpleName());
+        }
+    }
+
+    private void postTargetWindow(Object record, boolean requireVisible) {
+        try {
+            SystemAutonomousRuntime runtime = autonomousRuntime;
+            if (runtime != null && runtime.observesTargetWindows()) {
+                runtime.onTargetWindow(targetWindows.read(record, requireVisible));
+            }
+        } catch (Throwable ignored) {
+            // Cosmetic observation must never change the framework's original callback result.
         }
     }
 
@@ -274,6 +336,7 @@ public final class IceBridgeModule extends XposedModule {
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
                         AutonomousBridgeCoordinator.Request<Intent> autonomous = null;
+                        long autonomousObservedAt = 0;
                         try {
                             Object request = activityStarterRequestField.get(chain.getThisObject());
                             Intent original = request == null ? null
@@ -289,6 +352,7 @@ public final class IceBridgeModule extends XposedModule {
                                 return chain.proceed();
                             }
                             if (autonomousConfiguration(userId) != null) {
+                                autonomousObservedAt = SystemClock.elapsedRealtime();
                                 autonomous = captureAutonomousRequest(original, userId, request);
                             } else {
                                 // The normal mode keeps its existing foreground app trampoline.
@@ -313,7 +377,7 @@ public final class IceBridgeModule extends XposedModule {
                             boolean missing = result instanceof Integer
                                     && ((Integer) result == -1 || (Integer) result == -2);
                             if (web || missing) {
-                                enqueueAutonomous(autonomous);
+                                enqueueAutonomous(autonomous, autonomousObservedAt);
                             }
                         }
                         return result;
@@ -504,13 +568,18 @@ public final class IceBridgeModule extends XposedModule {
     }
 
     private void enqueueAutonomous(AutonomousBridgeCoordinator.Request<Intent> request) {
+        enqueueAutonomous(request, SystemClock.elapsedRealtime());
+    }
+
+    private void enqueueAutonomous(AutonomousBridgeCoordinator.Request<Intent> request, long observedAt) {
         Handler worker = systemHandler;
         if (worker == null || autonomousRuntime == null) return;
         String key = request.userId + ":" + request.sourcePackage + ":" + request.fingerprint;
         if (!autonomousObservations.claim(key, SystemClock.elapsedRealtime())) return;
+        long queuedAt = SystemClock.elapsedRealtime();
         worker.post(() -> {
             SystemAutonomousRuntime runtime = autonomousRuntime;
-            if (runtime != null) runtime.execute(request);
+            if (runtime != null) runtime.execute(request, observedAt, queuedAt);
         });
     }
 
@@ -522,11 +591,12 @@ public final class IceBridgeModule extends XposedModule {
                     pruneReplayTokens(SystemClock.elapsedRealtime());
                     replayTokens.put(token, SystemClock.elapsedRealtime() + REPLAY_TOKEN_WINDOW_MILLIS);
                     intent.putExtra(EXTRA_NATIVE_REPLAY_TOKEN, token);
-                }, message -> log(4, TAG, message));
+                }, message -> log(4, TAG, message), systemServerClassLoader);
         // Context can exist before PackageManager finishes bootstrapping. Retry next tick instead
         // of permanently publishing an unavailable Binder adapter into the independent runtime.
         if (!runtime.isReady()) return;
         runtime.restore();
+        runtime.setWindowObservationReady(targetWindowObservationReady);
         autonomousRuntime = runtime;
     }
 

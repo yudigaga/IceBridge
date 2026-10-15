@@ -7,7 +7,7 @@ import java.time.LocalDate;
 import java.util.Random;
 import java.util.concurrent.CopyOnWriteArraySet;
 
-/** App-process theme settings, shared by all Activities and separate from system-server rules. */
+/** App-process theme settings. Activities and the system transit snapshot share the same seed. */
 public final class ThemePreferencesStore {
     public static final String PREFS = "appearance";
     private static ThemePreferencesStore instance;
@@ -36,7 +36,10 @@ public final class ThemePreferencesStore {
                 preferences.getString("random_date", ""));
     }
 
-    /** Reading alone never begins a launch session. Use resolve() for an up-to-date daily color. */
+    /**
+     * Reading alone never begins a launch session or rotates the color. The Provider uses this
+     * exact snapshot; foreground UI may use resolve() for an up-to-date daily color.
+     */
     public synchronized ThemePolicy.State getSnapshot() { return state; }
 
     public ThemePolicy.State resolve() { return resolve(LocalDate.now()); }
@@ -67,7 +70,10 @@ public final class ThemePreferencesStore {
         return update(ThemePolicy.setAppearance(state, appearance));
     }
 
-    /** Listeners run after a complete logical update, on the same thread as the mutation. */
+    /**
+     * Listeners run after a complete logical update, on the same thread as the mutation. Additive
+     * subscriptions let Provider synchronization coexist with foreground theme rendering.
+     */
     public void addListener(Runnable listener) { listeners.add(listener); }
 
     public void removeListener(Runnable listener) { listeners.remove(listener); }

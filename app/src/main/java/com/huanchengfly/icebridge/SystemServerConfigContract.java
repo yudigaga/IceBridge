@@ -9,6 +9,7 @@ import android.util.Log;
 import com.huanchengfly.icebridge.automation.LinkRuleEntry;
 import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
+import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -37,6 +38,8 @@ public final class SystemServerConfigContract {
     public static final String KEY_ONLINE_UPDATES = "online_link_rule_updates";
     public static final String KEY_ONLINE_REVISION = "online_rules_highest_revision";
     public static final String KEY_ONLINE_SHA256 = "online_rules_highest_sha256";
+    public static final String KEY_TRANSIT_SEED_COLOR = "transit_seed_color";
+    public static final String KEY_TRANSIT_APPEARANCE = "transit_appearance";
     public static final String KEY_CONFIG_FINGERPRINT = "runtime_config_fingerprint";
     public static final String KEY_RUNTIME_READY = "runtime_ready";
     public static final String KEY_RUNTIME_PERSISTED_ACK = "runtime_persisted_ack";
@@ -87,7 +90,9 @@ public final class SystemServerConfigContract {
                 snapshot.getBoolean(KEY_ONLINE_UPDATES, true),
                 snapshot.getLong(KEY_ONLINE_REVISION, 0L),
                 snapshot.getString(KEY_ONLINE_SHA256, ""),
-                snapshot.getString(KEY_CONFIG_FINGERPRINT, ""));
+                snapshot.getString(KEY_CONFIG_FINGERPRINT, ""),
+                snapshot.getInt(KEY_TRANSIT_SEED_COLOR, ThemePolicy.DEFAULT_SEED_COLOR),
+                snapshot.getString(KEY_TRANSIT_APPEARANCE, ThemePolicy.APPEARANCE_SYSTEM));
     }
 
     // Kept independent of Android Bundle so the contract rules can be covered by local JVM tests.
@@ -108,6 +113,20 @@ public final class SystemServerConfigContract {
                                 String[] onlineHostRules, int userId, boolean autonomousEnabled,
                                 boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled,
                                 long onlineRevision, String onlineSha256, String configFingerprint) {
+        return parseValues(schemaVersion, status, error, recoveryEnabled, autoOpenLinks, nativeLinkCapture,
+                clipboardAutoOpen, paymentSdkBridge, frozenPackages, onlineHostRules, userId, autonomousEnabled,
+                onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                ThemePolicy.DEFAULT_SEED_COLOR, ThemePolicy.APPEARANCE_SYSTEM);
+    }
+
+    static Snapshot parseValues(Integer schemaVersion, String status, String error,
+                                boolean recoveryEnabled, boolean autoOpenLinks,
+                                boolean nativeLinkCapture, boolean clipboardAutoOpen,
+                                boolean paymentSdkBridge, String[] frozenPackages,
+                                String[] onlineHostRules, int userId, boolean autonomousEnabled,
+                                boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled,
+                                long onlineRevision, String onlineSha256, String configFingerprint,
+                                int transitSeedColor, String transitAppearance) {
         if (schemaVersion == null) {
             return Snapshot.unavailable("null-snapshot");
         }
@@ -120,6 +139,9 @@ public final class SystemServerConfigContract {
                     : error);
         }
         if (userId < 0 || userId > 999) return Snapshot.unavailable("snapshot-user-invalid");
+        if ((transitSeedColor >>> 24) != 0xff || !SystemRuntimeConfig.isTransitAppearance(transitAppearance)) {
+            return Snapshot.unavailable("transit-theme-invalid");
+        }
         if (onlineRevision < 0 || onlineSha256 == null
                 || (onlineRevision == 0 && !onlineSha256.isEmpty())
                 || (onlineRevision > 0 && !onlineSha256.matches("[0-9a-f]{64}"))) {
@@ -133,7 +155,8 @@ public final class SystemServerConfigContract {
         try {
             return Snapshot.available(recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
                     paymentSdkBridge, frozenPackages, onlineHostRules, userId, autonomousEnabled,
-                    onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint);
+                    onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                    transitSeedColor, transitAppearance);
         } catch (IllegalArgumentException invalidRules) {
             return Snapshot.unavailable("scoped-rules-invalid");
         }
@@ -157,6 +180,8 @@ public final class SystemServerConfigContract {
         public final long onlineRevision;
         public final String onlineSha256;
         public final String configFingerprint;
+        public final int transitSeedColor;
+        public final String transitAppearance;
 
         private Snapshot(boolean available, boolean recoveryEnabled, boolean autoOpenLinks,
                          boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge, String status,
@@ -164,6 +189,18 @@ public final class SystemServerConfigContract {
                          boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
                          boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
                          String configFingerprint) {
+            this(available, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge,
+                    status, frozenPackages, onlineHostRules, userId, autonomousEnabled, onlyFrozen, browserFallback,
+                    onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                    ThemePolicy.DEFAULT_SEED_COLOR, ThemePolicy.APPEARANCE_SYSTEM);
+        }
+
+        private Snapshot(boolean available, boolean recoveryEnabled, boolean autoOpenLinks,
+                         boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge, String status,
+                         Set<String> frozenPackages, String[] onlineHostRules, int userId,
+                         boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
+                         boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
+                         String configFingerprint, int transitSeedColor, String transitAppearance) {
             this.available = available;
             this.recoveryEnabled = recoveryEnabled;
             this.autoOpenLinks = autoOpenLinks;
@@ -182,6 +219,8 @@ public final class SystemServerConfigContract {
             this.onlineRevision = onlineRevision;
             this.onlineSha256 = onlineSha256;
             this.configFingerprint = configFingerprint;
+            this.transitSeedColor = transitSeedColor;
+            this.transitAppearance = transitAppearance;
         }
 
         public SystemRuntimeConfig.State toRuntimeState(long savedAtEpochMillis) throws java.io.IOException {
@@ -189,7 +228,8 @@ public final class SystemServerConfigContract {
             return new SystemRuntimeConfig.State(SCHEMA_VERSION, userId, savedAtEpochMillis,
                     autonomousEnabled, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
                     paymentSdkBridge, onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineHostRules,
-                    new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0));
+                    new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0),
+                    transitSeedColor, transitAppearance);
         }
 
         private static Snapshot available(boolean recoveryEnabled, boolean autoOpenLinks,
@@ -197,7 +237,7 @@ public final class SystemServerConfigContract {
                                           String[] frozenPackages, String[] onlineHostRules, int userId,
                                           boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
                                           boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
-                                          String configFingerprint) {
+                                          String configFingerprint, int transitSeedColor, String transitAppearance) {
             Set<String> values = new LinkedHashSet<>();
             if (frozenPackages != null) {
                 values.addAll(Arrays.asList(frozenPackages));
@@ -206,7 +246,8 @@ public final class SystemServerConfigContract {
             }
             return new Snapshot(true, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
                     paymentSdkBridge, STATUS_OK, Collections.unmodifiableSet(values), onlineHostRules, userId,
-                    autonomousEnabled, onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint);
+                    autonomousEnabled, onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                    transitSeedColor, transitAppearance);
         }
 
         private static Snapshot unavailable(String status) {

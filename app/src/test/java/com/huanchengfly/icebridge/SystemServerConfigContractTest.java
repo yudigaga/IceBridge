@@ -1,5 +1,7 @@
 package com.huanchengfly.icebridge;
 
+import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
+
 import org.junit.Test;
 
 import java.util.Arrays;
@@ -152,6 +154,30 @@ public class SystemServerConfigContractTest {
         assertTrue(snapshot.browserFallback);
         assertTrue(snapshot.onlineUpdatesEnabled);
         assertEquals(0, snapshot.onlineRevision);
+        assertEquals(ThemePolicy.DEFAULT_SEED_COLOR, snapshot.transitSeedColor);
+        assertEquals(ThemePolicy.APPEARANCE_SYSTEM, snapshot.transitAppearance);
+    }
+
+    @Test public void transitThemeSurvivesSnapshotAndRuntimeConversion() throws Exception {
+        SystemServerConfigContract.Snapshot snapshot = themed(0xff00796b, ThemePolicy.APPEARANCE_LIGHT);
+        assertTrue(snapshot.available);
+        assertEquals(0xff00796b, snapshot.transitSeedColor);
+        assertEquals(ThemePolicy.APPEARANCE_LIGHT, snapshot.transitAppearance);
+        assertEquals(snapshot.transitSeedColor, snapshot.toRuntimeState(123).transitSeedColor);
+        assertEquals(snapshot.transitAppearance, snapshot.toRuntimeState(123).transitAppearance);
+    }
+
+    @Test public void invalidTransitAppearanceAndTranslucentSeedCannotEnterRuntime() {
+        assertFalse(themed(0x002979ff, ThemePolicy.APPEARANCE_SYSTEM).available);
+        assertEquals("transit-theme-invalid", themed(0x002979ff, ThemePolicy.APPEARANCE_SYSTEM).status);
+        assertFalse(themed(0xff2979ff, "unknown").available);
+        assertFalse(themed(0xff2979ff, null).available);
+    }
+
+    private static SystemServerConfigContract.Snapshot themed(int seedColor, String appearance) {
+        return SystemServerConfigContract.parseValues(SystemServerConfigContract.SCHEMA_VERSION,
+                SystemServerConfigContract.STATUS_OK, null, true, true, true, true, true,
+                null, null, 0, true, true, true, true, 0, "", repeat('b', 64), seedColor, appearance);
     }
 
     private static void assertRuntimeInvalid(long revision, String hash, String fingerprint, String expected) {

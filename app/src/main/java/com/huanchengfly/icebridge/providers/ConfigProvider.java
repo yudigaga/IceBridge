@@ -30,6 +30,8 @@ import com.huanchengfly.icebridge.automation.OnlineLinkRuleRepository;
 import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 import com.huanchengfly.icebridge.databases.AppConfig;
+import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
+import com.huanchengfly.icebridge.ui.theme.ThemePreferencesStore;
 
 import org.litepal.LitePal;
 
@@ -53,6 +55,9 @@ public class ConfigProvider extends ContentProvider {
     private final SharedPreferences.OnSharedPreferenceChangeListener preferencesChanged = (preferences, key) -> {
         if (key == null || !key.startsWith("rule_config_effective")) notifyChange();
     };
+    // Subscribe to complete logical theme updates alongside the Activity's own listeners. A raw
+    // preference callback could run before ThemePreferencesStore publishes its new immutable state.
+    private final Runnable themeChanged = this::notifyChange;
     private final BroadcastReceiver packagesChanged = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) { notifyChange(); }
     };
@@ -96,6 +101,7 @@ public class ConfigProvider extends ContentProvider {
         if (context != null) {
             context.getSharedPreferences(LinkAutomationConfig.PREFS, Context.MODE_PRIVATE)
                     .registerOnSharedPreferenceChangeListener(preferencesChanged);
+            ThemePreferencesStore.get(context).addListener(themeChanged);
             IntentFilter filter = new IntentFilter();
             filter.addAction(Intent.ACTION_PACKAGE_ADDED);
             filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
@@ -153,6 +159,11 @@ public class ConfigProvider extends ContentProvider {
             }
             SharedPreferences preferences = getContext().getApplicationContext()
                     .getSharedPreferences(LinkAutomationConfig.PREFS, Context.MODE_PRIVATE);
+            // A system snapshot must reuse the current color without beginning a user launch or
+            // resolving random/day policy. Merely querying the Provider cannot rotate the theme.
+            ThemePolicy.State theme = ThemePreferencesStore.get(getContext()).getSnapshot();
+            snapshot.putInt(SystemServerConfigContract.KEY_TRANSIT_SEED_COLOR, theme.getSeedColor());
+            snapshot.putString(SystemServerConfigContract.KEY_TRANSIT_APPEARANCE, theme.getAppearance());
             boolean autonomous = preferences.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false);
             snapshot.putBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, autonomous);
             snapshot.putBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN,
@@ -219,7 +230,8 @@ public class ConfigProvider extends ContentProvider {
                     snapshot.getBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN),
                     snapshot.getBoolean(SystemServerConfigContract.KEY_BROWSER_FALLBACK),
                     snapshot.getBoolean(SystemServerConfigContract.KEY_ONLINE_UPDATES), rules,
-                    new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0));
+                    new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0),
+                    theme.getSeedColor(), theme.getAppearance());
             String fingerprint = SystemRuntimeConfig.fingerprint(baseline);
             snapshot.putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, fingerprint);
             SharedPreferences status = runtimeStatus();

@@ -17,6 +17,9 @@ import com.huanchengfly.icebridge.automation.SystemRuntimeConfigStore;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Owns the worker-only runtime; frozen-package observations never call an app component. */
 public final class SystemAutonomousRuntime {
@@ -31,6 +34,12 @@ public final class SystemAutonomousRuntime {
     private final SystemPackageAccess packages;
     private final AutonomousBridgeCoordinator<Intent> coordinator;
     private final SystemLaunchPreflight preflight;
+    private final SystemTransitPresenter transit;
+    private final Handler transitEvents;
+    private final AtomicLong nextTransitId = new AtomicLong();
+    private final ConcurrentHashMap<Long, TransitTrace> transitTraces = new ConcurrentHashMap<>();
+    private TransitTrace workerTrace;
+    private volatile boolean windowObservationReady;
     private final ExecutorService network = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "IceBridge-RuleUpdates");
         thread.setDaemon(true);
@@ -43,16 +52,40 @@ public final class SystemAutonomousRuntime {
 
     public SystemAutonomousRuntime(Context context, Handler worker,
             SystemAutonomousLauncher.IntentDecorator decorator, Logger logger) {
+        this(context, worker, decorator, logger, SystemAutonomousRuntime.class.getClassLoader());
+    }
+
+    public SystemAutonomousRuntime(Context context, Handler worker,
+            SystemAutonomousLauncher.IntentDecorator decorator, Logger logger, ClassLoader serverLoader) {
         this.context = context;
         this.worker = worker;
         this.logger = logger;
         this.decorator = decorator;
+        transit = SystemTransitPresenter.create(context, this::safeLog, serverLoader);
+        Handler uiEvents;
+        try { uiEvents = (Handler) Class.forName("com.android.server.UiThread", true, serverLoader)
+                .getMethod("getHandler").invoke(null); }
+        catch (Throwable unavailable) { uiEvents = worker; }
+        transitEvents = uiEvents;
         packages = SystemPackageAccess.create();
         preflight = new SystemLaunchPreflight(PROTECTED_PACKAGE, packages);
         coordinator = new AutonomousBridgeCoordinator<>(PROTECTED_PACKAGE, packages,
-                new SystemAutonomousLauncher(context, PROTECTED_PACKAGE, decorator,
+                new SystemAutonomousLauncher(context, PROTECTED_PACKAGE, (intent, user, source) -> {
+                    decorator.registerReplay(intent, user, source);
+                    TransitTrace trace = workerTrace;
+                    if (trace != null) {
+                        intent.putExtra(SystemTargetWindowObserver.EXTRA_TRANSIT_ID, trace.id);
+                        String pkg = intent.getComponent() == null ? intent.getPackage()
+                                : intent.getComponent().getPackageName();
+                        if (pkg != null && trace.targetPackage == null) reportStage(trace, pkg,
+                                AutonomousBridgeCoordinator.Stage.OPENING);
+                    }
+                },
                         (event, user, target) -> logger.event(event + ": user=" + user + ", target=" + target)),
-                SystemClock::elapsedRealtime);
+                SystemClock::elapsedRealtime, (request, target, stage) -> {
+                    TransitTrace trace = workerTrace;
+                    if (trace != null) reportStage(trace, target, stage);
+                });
     }
 
     /** The Provider channel currently configures owner user 0; never inherit it into a profile. */
@@ -67,6 +100,14 @@ public final class SystemAutonomousRuntime {
     }
 
     public boolean isReady() { return packages.isReady(); }
+
+    public void setWindowObservationReady(boolean ready) { windowObservationReady = ready; }
+
+    public boolean observesTargetWindows() {
+        SystemRuntimeConfig.State state = current(0);
+        return state != null && state.recoveryEnabled && TransitWindowCorrelation.interrupted(
+                transitTraces.values(), 0, SystemClock.elapsedRealtime()) != null;
+    }
 
     /** Called exclusively at the verified public Binder entry before framework launch locks. */
     public void prepareOriginalLaunch(Intent original, int userId, int callerUserId, boolean outsideLock) {
@@ -106,6 +147,7 @@ public final class SystemAutonomousRuntime {
         try {
             if (!snapshot.autonomousEnabled) {
                 configuration = null;
+                transit.cancelAll("disabled");
                 store.disable(snapshot.userId);
                 persisted = true;
                 message = "已关闭系统独立运行";
@@ -137,6 +179,11 @@ public final class SystemAutonomousRuntime {
     }
 
     public void execute(AutonomousBridgeCoordinator.Request<Intent> request) {
+        long now = SystemClock.elapsedRealtime();
+        execute(request, now, now);
+    }
+
+    public void execute(AutonomousBridgeCoordinator.Request<Intent> request, long observedAt, long queuedAt) {
         SystemRuntimeConfig.State state = current(request.userId);
         request = rebaseRequest(state, request);
         if (request == null) return;
@@ -150,9 +197,22 @@ public final class SystemAutonomousRuntime {
             logger.event("autonomous request ignored: module-not-installed-or-state-unknown");
             return;
         }
-        AutonomousBridgeCoordinator.Result result = coordinator.execute(request, state.scopedRules);
+        TransitTrace trace = beginTrace(request.userId, state, observedAt, queuedAt);
+        workerTrace = trace;
+        AutonomousBridgeCoordinator.Result result;
+        try { result = coordinator.execute(request, state.scopedRules); }
+        finally { workerTrace = null; }
         logger.event("autonomous transaction: " + result.outcome + ", reason=" + result.reason
                 + ", target=" + result.targetPackage + ", user=" + request.userId);
+        if (result.outcome == AutonomousBridgeCoordinator.Outcome.ROUTED) {
+            trace.acceptedAt = SystemClock.elapsedRealtime();
+            transit.onSubmitted(trace.id);
+            traceLog(trace, "submitted", trace.acceptedAt);
+        } else {
+            trace.done.set(true);
+            transit.finish(trace.id, result.reason);
+            traceLog(trace, "finished-" + result.reason, SystemClock.elapsedRealtime());
+        }
         // A copied URL has no foreground original request to preserve. Fall back only after an
         // actual selected-target failure; unmatched, installed/enabled and ambiguous cases stay quiet.
         if (state.browserFallback && request.fingerprint.startsWith("clipboard:")
@@ -160,10 +220,103 @@ public final class SystemAutonomousRuntime {
                 && result.targetPackage != null
                 && (result.reason.startsWith("thaw-") || result.reason.startsWith("launch-failed:"))
                 && request.payload != null && request.payload.getData() != null) {
-            boolean opened = SystemBrowserFallback.open(context, request.userId,
-                    request.payload.getData().toString(), result.targetPackage, decorator);
+            TransitTrace fallback = beginTrace(request.userId, state, observedAt, SystemClock.elapsedRealtime());
+            workerTrace = fallback;
+            boolean opened;
+            try {
+                opened = SystemBrowserFallback.open(context, request.userId,
+                        request.payload.getData().toString(), result.targetPackage, (intent, user, source) -> {
+                            decorator.registerReplay(intent, user, source);
+                            intent.putExtra(SystemTargetWindowObserver.EXTRA_TRANSIT_ID, fallback.id);
+                            reportStage(fallback, intent.getComponent().getPackageName(),
+                                    AutonomousBridgeCoordinator.Stage.OPENING);
+                        });
+            } finally { workerTrace = null; }
+            if (opened) { transit.onSubmitted(fallback.id); traceLog(fallback, "submitted", SystemClock.elapsedRealtime()); }
+            else { fallback.done.set(true); transit.finish(fallback.id, "browser-unavailable"); }
             logger.event("autonomous clipboard browser fallback: opened=" + opened);
         }
+    }
+
+    /** Called outside UI code by after-hooks; it never queries packages or waits for a handler. */
+    public void onTargetWindow(SystemTargetWindowObserver.Event event) {
+        if (event == null) return;
+        transitEvents.post(() -> handleTargetWindow(event));
+    }
+
+    private void handleTargetWindow(SystemTargetWindowObserver.Event event) {
+        if (event.systemPrompt) {
+            TransitWindowCorrelation.Pending pending = TransitWindowCorrelation.interrupted(
+                    transitTraces.values(), event.userId, event.observedAt);
+            if (pending != null && current(event.userId) != null) {
+                transit.finish(pending.id(), "system-permission-window");
+                traceLog((TransitTrace) pending, "system-prompt", event.observedAt);
+            }
+            return;
+        }
+        TransitTrace trace = (TransitTrace) TransitWindowCorrelation.match(transitTraces.values(),
+                event.id, event.userId, event.packageName, event.observedAt);
+        if (trace == null || !trace.done.compareAndSet(false, true)) return;
+        transit.onTargetDrawn(trace.id, event.userId, event.packageName);
+        traceLog(trace, "window-ready", event.observedAt);
+    }
+
+    private TransitTrace beginTrace(int user, SystemRuntimeConfig.State state, long observedAt, long queuedAt) {
+        long now = SystemClock.elapsedRealtime();
+        transitTraces.entrySet().removeIf(entry -> now < entry.getValue().startedAt
+                || now - entry.getValue().startedAt > 20_000L);
+        while (transitTraces.size() >= 64) {
+            Long oldest = java.util.Collections.min(transitTraces.keySet());
+            transitTraces.remove(oldest);
+        }
+        TransitTrace trace = new TransitTrace(nextTransitId.incrementAndGet(), user, state, observedAt, queuedAt, now);
+        transitTraces.put(trace.id, trace);
+        traceLog(trace, "worker-start", now);
+        return trace;
+    }
+
+    private void reportStage(TransitTrace trace, String target, AutonomousBridgeCoordinator.Stage stage) {
+        long now = SystemClock.elapsedRealtime();
+        trace.targetPackage = target;
+        if (stage == AutonomousBridgeCoordinator.Stage.THAWING) trace.thawingAt = now;
+        else trace.openingAt = now;
+        if (windowObservationReady) {
+            transit.onStage(trace.id, trace.userId, target,
+                    stage == AutonomousBridgeCoordinator.Stage.THAWING
+                            ? SystemTransitPresenter.Stage.THAWING : SystemTransitPresenter.Stage.OPENING,
+                    trace.state.transitSeedColor, trace.state.transitAppearance);
+        }
+        traceLog(trace, stage == AutonomousBridgeCoordinator.Stage.THAWING ? "thawing" : "opening", now);
+    }
+
+    private void traceLog(TransitTrace trace, String stage, long now) {
+        safeLog("transit timing: id=" + trace.id + ", stage=" + stage + ", user=" + trace.userId
+                + ", target=" + trace.targetPackage + ", elapsedMs=" + Math.max(0, now - trace.observedAt)
+                + ", sourceStartMs=" + Math.max(0, trace.queuedAt - trace.observedAt)
+                + ", queueMs=" + Math.max(0, trace.startedAt - trace.queuedAt)
+                + ", workerMs=" + Math.max(0, now - trace.startedAt)
+                + ", thawMs=" + (trace.thawingAt > 0 && trace.openingAt > 0
+                ? Math.max(0, trace.openingAt - trace.thawingAt) : -1));
+    }
+    private void safeLog(String message) { try { logger.event(message); } catch (Throwable ignored) { } }
+
+    private static final class TransitTrace implements TransitWindowCorrelation.Pending {
+        final long id, observedAt, queuedAt, startedAt;
+        final int userId;
+        final SystemRuntimeConfig.State state;
+        final AtomicBoolean done = new AtomicBoolean();
+        volatile String targetPackage;
+        volatile long thawingAt, openingAt, acceptedAt;
+        TransitTrace(long id, int userId, SystemRuntimeConfig.State state, long observedAt, long queuedAt, long startedAt) {
+            this.id = id; this.userId = userId; this.state = state;
+            this.observedAt = observedAt; this.queuedAt = queuedAt; this.startedAt = startedAt;
+        }
+        @Override public long id() { return id; }
+        @Override public int userId() { return userId; }
+        @Override public String targetPackage() { return targetPackage; }
+        @Override public long startedAt() { return startedAt; }
+        @Override public long openingAt() { return openingAt; }
+        @Override public boolean completed() { return done.get(); }
     }
 
     /** A queued observation may outlive a setting change; use the latest acknowledged policy. */

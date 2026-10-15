@@ -14,8 +14,14 @@ import java.util.Objects;
 public final class AutonomousBridgeCoordinator<P> {
     public enum Kind { WEB_RULE, EXPLICIT, THAW_ONLY }
     public enum Outcome { ROUTED, THAWED, PASSTHROUGH, DUPLICATE, FAILED }
+    public enum Stage { THAWING, OPENING }
 
     public interface Clock { long elapsedRealtime(); }
+
+    /** Progress is advisory and must never delay or prevent the package transaction. */
+    public interface Observer<P> {
+        void onStage(Request<P> request, String targetPackage, Stage stage);
+    }
 
     public interface PackageAccess {
         State read(String packageName, int userId);
@@ -159,14 +165,21 @@ public final class AutonomousBridgeCoordinator<P> {
     private final PackageAccess packages;
     private final Launcher<P> launcher;
     private final Clock clock;
+    private final Observer<P> observer;
     private final LinkedHashMap<String, Long> successfulTransactions = new LinkedHashMap<>();
 
     public AutonomousBridgeCoordinator(String protectedPackage, PackageAccess packages,
                                        Launcher<P> launcher, Clock clock) {
+        this(protectedPackage, packages, launcher, clock, (request, target, stage) -> { });
+    }
+
+    public AutonomousBridgeCoordinator(String protectedPackage, PackageAccess packages,
+                                       Launcher<P> launcher, Clock clock, Observer<P> observer) {
         this.protectedPackage = Objects.requireNonNull(protectedPackage, "protectedPackage");
         this.packages = Objects.requireNonNull(packages, "packages");
         this.launcher = Objects.requireNonNull(launcher, "launcher");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.observer = Objects.requireNonNull(observer, "observer");
     }
 
     /** Run only on the serial system worker, outside ActivityTaskManager/clipboard locks. */
@@ -192,6 +205,7 @@ public final class AutonomousBridgeCoordinator<P> {
                 if (request.kind == Kind.WEB_RULE && !request.onlyFrozen && request.autoOpen
                         && before.isLaunchable()) {
                     try {
+                        notifyStage(request, target, Stage.OPENING);
                         launcher.launch(request, target, selected.conversion);
                     } catch (Throwable error) {
                         return preserve(request, target, "launch-failed:" + error.getClass().getSimpleName());
@@ -207,6 +221,7 @@ public final class AutonomousBridgeCoordinator<P> {
                     || (before.hidden && !capability.unhide)) {
                 return preserve(request, target, "freeze-method-unsupported");
             }
+            notifyStage(request, target, Stage.THAWING);
             String failure = packages.thaw(target, request.userId, before);
             if (failure != null) return preserve(request, target, "thaw-" + failure);
             State after = packages.read(target, request.userId);
@@ -223,6 +238,7 @@ public final class AutonomousBridgeCoordinator<P> {
                 return new Result(Outcome.THAWED, target, "thawed", replayed);
             }
             try {
+                notifyStage(request, target, Stage.OPENING);
                 launcher.launch(request, target, selected.conversion);
             } catch (Throwable error) {
                 return preserve(request, target, "launch-failed:" + error.getClass().getSimpleName());
@@ -231,6 +247,14 @@ public final class AutonomousBridgeCoordinator<P> {
             return new Result(Outcome.ROUTED, target, "routed", false);
         } catch (Throwable error) {
             return preserve(request, selectedTarget, "worker-" + error.getClass().getSimpleName());
+        }
+    }
+
+    private void notifyStage(Request<P> request, String target, Stage stage) {
+        try {
+            observer.onStage(request, target, stage);
+        } catch (Throwable ignored) {
+            // A missing or broken system progress surface must not change the transaction.
         }
     }
 

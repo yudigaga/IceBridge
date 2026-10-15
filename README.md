@@ -23,6 +23,8 @@ In **Bridge and automation**, enable **Run independently after freezing IceBridg
 
 Use 0.0.83 or later: it fixes ordinary WeChat/QQ Activity starts being mistaken for result requests. After upgrading, restart the device to load the new system module; see the [diagnosis and regression](docs/FROZEN_CAPTURE_DIAGNOSIS.md).
 
+Version 0.0.84 adds a centered native progress card for independent routing, including while IceBridge is frozen. It follows the synchronized theme, shows thawing/opening, and closes on the target window becoming ready. It adds no fixed launch delay; [progress and timing](docs/TRANSIT_PROGRESS.md) distinguishes module work from target-app cold starts.
+
 This mode currently supports Android user 0 and disabled/hidden packages. Keep the LSPosed module and `system` scope enabled. After changing rules or disabling the mode, wait for a fresh system acknowledgement before freezing the app again. Installation, ROM restrictions, actual framework injection after reboot and payment callbacks require device verification; see [setup and validation boundaries](docs/AUTONOMOUS_RUNTIME.md).
 
 ## Appearance

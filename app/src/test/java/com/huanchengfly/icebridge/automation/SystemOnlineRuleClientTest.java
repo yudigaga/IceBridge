@@ -1,5 +1,7 @@
 package com.huanchengfly.icebridge.automation;
 
+import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
+
 import org.junit.Test;
 
 import java.io.IOException;
@@ -40,6 +42,39 @@ public class SystemOnlineRuleClientTest {
         assertEquals(4, merged.online.highestRevision);
         assertEquals("manual.example.com", merged.scopedRules.get(0).host);
         assertEquals("new.example.com", merged.scopedRules.get(1).host);
+    }
+
+    @Test public void providerThemeChangeSurvivesMergeWithNewerSystemOnlineRules() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        SystemRuntimeConfig.State retained = themedState(state(true, latest.rules, cache(latest)),
+                0xff2979ff, ThemePolicy.APPEARANCE_LIGHT);
+        SystemRuntimeConfig.State incoming = themedState(state(true,
+                rules(manual("manual.example.com"), online("old.example.com")), metadata(old)),
+                0xff7e57c2, ThemePolicy.APPEARANCE_DARK);
+        SystemRuntimeConfig.State merged = SystemOnlineRuleClient.mergeProvider(incoming, retained);
+        assertEquals(4, merged.online.highestRevision);
+        assertEquals("new.example.com", merged.scopedRules.get(1).host);
+        assertEquals(incoming.transitSeedColor, merged.transitSeedColor);
+        assertEquals(incoming.transitAppearance, merged.transitAppearance);
+    }
+
+    @Test public void onlineDownloadRebasesOntoLatestTransitTheme() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        SystemRuntimeConfig.State before = state(true, old.rules, cache(old));
+        SystemOnlineRuleClient.Result downloaded = new SystemOnlineRuleClient.Result(before, latest);
+        SystemRuntimeConfig.State edited = themedState(before, 0xff00796b, ThemePolicy.APPEARANCE_DARK);
+        SystemRuntimeConfig.State after = downloaded.applyTo(edited, 200);
+        assertEquals(4, after.online.highestRevision);
+        assertEquals(edited.transitSeedColor, after.transitSeedColor);
+        assertEquals(edited.transitAppearance, after.transitAppearance);
+    }
+
+    private static SystemRuntimeConfig.State themedState(SystemRuntimeConfig.State state,
+                                                         int seedColor, String appearance) throws IOException {
+        return new SystemRuntimeConfig.State(state.providerSchemaVersion, state.userId, state.savedAtEpochMillis,
+                state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
+                state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
+                state.onlineUpdatesEnabled, state.encodedRules(), state.online, seedColor, appearance);
     }
 
     @Test public void providerCurrentRevisionDoesNotGetReplacedByRetainedOlderBackup() throws Exception {

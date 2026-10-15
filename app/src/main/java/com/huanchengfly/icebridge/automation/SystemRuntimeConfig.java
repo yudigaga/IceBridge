@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
+import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -49,6 +50,8 @@ public final class SystemRuntimeConfig {
         public final boolean onlyFrozen;
         public final boolean browserFallback;
         public final boolean onlineUpdatesEnabled;
+        public final int transitSeedColor;
+        public final String transitAppearance;
         public final List<LinkRuleEntry> scopedRules;
         public final OnlineState online;
 
@@ -57,9 +60,22 @@ public final class SystemRuntimeConfig {
                      boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
                      boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled, String[] scopedRules,
                      OnlineState online) throws IOException {
+            this(providerSchemaVersion, userId, savedAtEpochMillis, autonomousEnabled, recoveryEnabled,
+                    autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge, onlyFrozen,
+                    browserFallback, onlineUpdatesEnabled, scopedRules, online,
+                    ThemePolicy.DEFAULT_SEED_COLOR, ThemePolicy.APPEARANCE_SYSTEM);
+        }
+
+        public State(int providerSchemaVersion, int userId, long savedAtEpochMillis,
+                     boolean autonomousEnabled, boolean recoveryEnabled, boolean autoOpenLinks,
+                     boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
+                     boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled, String[] scopedRules,
+                     OnlineState online, int transitSeedColor, String transitAppearance) throws IOException {
             checkUserId(userId);
             require(providerSchemaVersion > 0 && providerSchemaVersion <= 10000, "runtime-provider-schema");
             require(savedAtEpochMillis >= 0, "runtime-saved-at");
+            require((transitSeedColor >>> 24) == 0xff, "runtime-transit-seed-color");
+            require(isTransitAppearance(transitAppearance), "runtime-transit-appearance");
             this.providerSchemaVersion = providerSchemaVersion;
             this.userId = userId;
             this.savedAtEpochMillis = savedAtEpochMillis;
@@ -72,6 +88,8 @@ public final class SystemRuntimeConfig {
             this.onlyFrozen = onlyFrozen;
             this.browserFallback = browserFallback;
             this.onlineUpdatesEnabled = onlineUpdatesEnabled;
+            this.transitSeedColor = transitSeedColor;
+            this.transitAppearance = transitAppearance;
             try {
                 this.scopedRules = ScopedRuleResolver.decode(scopedRules == null ? null : scopedRules.clone());
             } catch (IllegalArgumentException error) {
@@ -86,7 +104,8 @@ public final class SystemRuntimeConfig {
         public State withOnline(OnlineState replacement, String[] mergedRules, long savedAt) throws IOException {
             return new State(providerSchemaVersion, userId, savedAt, autonomousEnabled,
                     recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
-                    paymentSdkBridge, onlyFrozen, browserFallback, onlineUpdatesEnabled, mergedRules, replacement);
+                    paymentSdkBridge, onlyFrozen, browserFallback, onlineUpdatesEnabled, mergedRules, replacement,
+                    transitSeedColor, transitAppearance);
         }
     }
 
@@ -159,6 +178,8 @@ public final class SystemRuntimeConfig {
         root.addProperty("onlyFrozen", state.onlyFrozen);
         root.addProperty("browserFallback", state.browserFallback);
         root.addProperty("onlineUpdatesEnabled", state.onlineUpdatesEnabled);
+        root.addProperty("transitSeedColor", state.transitSeedColor);
+        root.addProperty("transitAppearance", state.transitAppearance);
         JsonArray rules = new JsonArray();
         for (String rule : state.encodedRules()) rules.add(new JsonPrimitive(rule));
         root.add("scopedRules", rules);
@@ -184,7 +205,7 @@ public final class SystemRuntimeConfig {
         State baseline = new State(state.providerSchemaVersion, state.userId, 0, state.autonomousEnabled,
                 state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture, state.clipboardAutoOpen,
                 state.paymentSdkBridge, state.onlyFrozen, state.browserFallback, state.onlineUpdatesEnabled,
-                state.encodedRules(), metadata);
+                state.encodedRules(), metadata, state.transitSeedColor, state.transitAppearance);
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(encode(baseline));
             StringBuilder result = new StringBuilder(64);
@@ -213,7 +234,8 @@ public final class SystemRuntimeConfig {
             JsonObject root = element.getAsJsonObject();
             fields(root, "format", "version", "providerSchemaVersion", "userId", "savedAtEpochMillis",
                     "autonomousEnabled", "recoveryEnabled", "autoOpenLinks", "nativeLinkCapture",
-                    "clipboardAutoOpen", "paymentSdkBridge", "onlyFrozen", "browserFallback", "onlineUpdatesEnabled", "scopedRules", "online");
+                    "clipboardAutoOpen", "paymentSdkBridge", "onlyFrozen", "browserFallback", "onlineUpdatesEnabled",
+                    "transitSeedColor", "transitAppearance", "scopedRules", "online");
             require(FORMAT.equals(string(root, "format", 64)), "runtime-format");
             require(integer(root, "version") == VERSION, "runtime-version");
             long userId = integer(root, "userId");
@@ -238,10 +260,19 @@ public final class SystemRuntimeConfig {
                     string(online, "activeSha256", 64), string(online, "backupRaw", OnlineRuleBundle.MAX_BUNDLE_BYTES),
                     string(online, "backupSha256", 64), integer(online, "highestRevision"),
                     string(online, "highestSha256", 64), bool(online, "migrated"));
+            // Version 1 snapshots written before the transit card retain all existing policy/rules.
+            // A missing optional field is legacy; an explicitly malformed field is rejected.
+            long seedColor = root.has("transitSeedColor") ? integer(root, "transitSeedColor")
+                    : ThemePolicy.DEFAULT_SEED_COLOR;
+            require(seedColor >= Integer.MIN_VALUE && seedColor <= Integer.MAX_VALUE,
+                    "runtime-transit-seed-color");
+            String appearance = root.has("transitAppearance") ? string(root, "transitAppearance", 16)
+                    : ThemePolicy.APPEARANCE_SYSTEM;
             return new State((int) schema, (int) userId, integer(root, "savedAtEpochMillis"),
                     bool(root, "autonomousEnabled"), bool(root, "recoveryEnabled"), bool(root, "autoOpenLinks"),
                     bool(root, "nativeLinkCapture"), bool(root, "clipboardAutoOpen"), bool(root, "paymentSdkBridge"),
-                    bool(root, "onlyFrozen"), bool(root, "browserFallback"), bool(root, "onlineUpdatesEnabled"), rules, cache);
+                    bool(root, "onlyFrozen"), bool(root, "browserFallback"), bool(root, "onlineUpdatesEnabled"),
+                    rules, cache, (int) seedColor, appearance);
         } catch (RuntimeException error) {
             throw new IOException("runtime-json", error);
         }
@@ -261,6 +292,11 @@ public final class SystemRuntimeConfig {
 
     public static void checkUserId(int userId) throws IOException {
         require(userId >= 0 && userId <= 999, "runtime-user-id");
+    }
+
+    public static boolean isTransitAppearance(String appearance) {
+        return ThemePolicy.APPEARANCE_SYSTEM.equals(appearance) || ThemePolicy.APPEARANCE_LIGHT.equals(appearance)
+                || ThemePolicy.APPEARANCE_DARK.equals(appearance);
     }
 
     private static String nonNull(String value) { return value == null ? "" : value; }
