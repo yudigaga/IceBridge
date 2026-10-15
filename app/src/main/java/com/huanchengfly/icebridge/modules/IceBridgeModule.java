@@ -37,6 +37,7 @@ import com.huanchengfly.icebridge.android16.PaymentSdkBridgeResolver;
 import com.huanchengfly.icebridge.android16.ResolvedLaunch;
 import com.huanchengfly.icebridge.android16.SystemServerPackageStateProbe;
 import com.huanchengfly.icebridge.android16.SystemAutonomousRuntime;
+import com.huanchengfly.icebridge.android16.SystemAutonomousCapture;
 import com.huanchengfly.icebridge.android16.AtmsBinderSignatureResolver;
 import com.huanchengfly.icebridge.android16.SystemLaunchPreflight;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
@@ -472,57 +473,34 @@ public final class IceBridgeModule extends XposedModule {
                 || !configuration.autoOpenLinks) return null;
         String token = original.getStringExtra(EXTRA_NATIVE_REPLAY_TOKEN);
         if (token != null && consumeReplayToken(token)) return null;
-        // A start-for-result needs the original caller/token relationship. Payment prewarm above
-        // deliberately preserves it; the independent launcher must not fabricate a replacement.
-        Field resultTo = frameworkRequest == null ? null : findField(frameworkRequest.getClass(), "resultTo");
-        try { if (resultTo != null && resultTo.get(frameworkRequest) != null) return null; }
-        catch (IllegalAccessException ignored) { return null; }
-        NativeActivityLinkCapture.CapturedLink captured = configuration.nativeLinkCapture
-                ? NativeActivityLinkCapture.capture(original) : null;
-        String sourcePackage = captured == null ? "*" : captured.sourcePackage;
-        if (captured == null && frameworkRequest != null) {
-            Field callingPackage = findField(frameworkRequest.getClass(), "callingPackage");
+        String caller = null;
+        boolean hasSourceToken = true;
+        Integer requestCode = null;
+        if (frameworkRequest != null) {
             try {
-                Object source = callingPackage == null ? null : callingPackage.get(frameworkRequest);
-                if (source instanceof String && PACKAGE_NAME_PATTERN.matcher((String) source).matches()) {
-                    sourcePackage = (String) source;
-                }
-            } catch (IllegalAccessException ignored) { }
-        }
-        String webUrl = captured == null ? (configuration.nativeLinkCapture
-                && Intent.ACTION_VIEW.equals(original.getAction()) && original.getData() != null
-                ? original.getData().toString() : null) : captured.url;
-        if (webUrl != null && webUrl.length() <= 16_384) {
-            Uri uri = Uri.parse(webUrl);
-            String scheme = uri.getScheme();
-            if (("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme)) && uri.getHost() != null) {
-                List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(configuration.scopedRules,
-                        sourcePackage, uri.getHost());
-                if (matches.isEmpty()) return null;
-                String bound = original.getComponent() == null ? original.getPackage()
-                        : original.getComponent().getPackageName();
-                String directTarget = ScopedRuleResolver.targetPackages(matches).contains(bound) ? bound : null;
-                // Strip source-private WebView extras immediately; only a public URL is forwarded.
-                Intent payload = new Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE);
-                return new AutonomousBridgeCoordinator.Request<>(AutonomousBridgeCoordinator.Kind.WEB_RULE,
-                        userId, sourcePackage, uri.getHost(), directTarget,
-                        BoundedExpiringDeduplicator.fingerprint(userId, sourcePackage + ":" + webUrl),
-                        payload, false, configuration.autoOpenLinks, configuration.onlyFrozen);
+                Field source = findField(frameworkRequest.getClass(), "resultTo");
+                Field code = findField(frameworkRequest.getClass(), "requestCode");
+                Field callingPackage = findField(frameworkRequest.getClass(), "callingPackage");
+                if (source != null) hasSourceToken = source.get(frameworkRequest) != null;
+                Object value = code == null ? null : code.get(frameworkRequest);
+                if (value instanceof Integer) requestCode = (Integer) value;
+                Object name = callingPackage == null ? null : callingPackage.get(frameworkRequest);
+                if (name instanceof String) caller = (String) name;
+            } catch (IllegalAccessException ignored) {
+                requestCode = null;
+                hasSourceToken = true;
             }
         }
-        Uri direct = CustomSchemeTargetResolver.findCustomSchemeUri(original);
-        String target = CustomSchemeTargetResolver.findTargetPackageForCustomSchemeUri(direct);
-        if (target == null || PACKAGE_NAME.equals(target) || !Intent.ACTION_VIEW.equals(original.getAction())) return null;
-        if ((original.getComponent() != null && !target.equals(original.getComponent().getPackageName()))
-                || (original.getPackage() != null && !target.equals(original.getPackage()))) return null;
-        if ((original.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) != 0
-                || original.getClipData() != null || original.getSelector() != null) return null;
-        Intent payload = direct.equals(original.getData()) ? new Intent(original)
-                : new Intent(Intent.ACTION_VIEW, direct).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(target);
-        return new AutonomousBridgeCoordinator.Request<>(AutonomousBridgeCoordinator.Kind.EXPLICIT,
-                userId, "*", null, target,
-                BoundedExpiringDeduplicator.fingerprint(userId, original.toUri(Intent.URI_INTENT_SCHEME)),
-                payload, false, true, configuration.onlyFrozen);
+        SystemAutonomousCapture.Result capture = SystemAutonomousCapture.capture(original,
+                userId, configuration, caller, hasSourceToken, requestCode);
+        if (capture.recognizedSource) {
+            log(4, TAG, "autonomous web observation: reason=" + capture.reason
+                    + ", source=" + (original.getComponent() == null ? "none"
+                    : original.getComponent().getPackageName()) + ", user=" + userId
+                    + ", sourceToken=" + hasSourceToken + ", requestCode="
+                    + (requestCode == null ? "unknown" : requestCode));
+        }
+        return capture.request;
     }
 
     private void enqueueAutonomous(AutonomousBridgeCoordinator.Request<Intent> request) {

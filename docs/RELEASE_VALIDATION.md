@@ -2,6 +2,18 @@
 
 自动测试、构建和验包验证代码与产物；它们不能证明 LSPosed 在具体 ROM 上已经正确解冻并打开目标页面。0.0.81 的主题界面和 0.0.82 的独立系统组件已在 Android 16 模拟器验证；实际 IceBox、系统 Hook、ROM 和支付回调检查仍须在对应真实环境执行。
 
+## 0.0.83 微信／QQ 捕获修复
+
+- 最终 JVM：35 个套件、268 项测试全部通过；debug、release、androidTest 构建成功，Lint 0 错误、145 个警告。
+- 正式包 v2 签名、既有升级证书、0.0.83 版本及 LSPosed 元数据、ZIP 对齐校验通过；SHA-256：`48BF6C1B8032243EA00888695B0CFA87CB965FF388E65B186D17314A501EBC4E`。
+- 用户日志证明：本体禁用并退出后，system_server 和 39 条独立规则仍在；两次微信 MMWebViewUI 普通来源请求均被捕获前的错误 token 保护跳过。日志未记录真实 URL extras，QQ 未有有效点击样本。
+- 先保留旧判断运行新增 Android 回归：8 项中 2 项失败，分别为普通微信／QQ 来源 token＋requestCode=-1；相同 URL 和规则在无来源 token 时通过。修复后 8 项全部通过；全量 Android instrumentation 为 39 项通过。
+- 新 Harness `capture-wechat`／`capture-qq` 使用同一捕获层，再接真实系统存储、PM 与 ATMS。API 36 隔离模拟器上，本体持续 enabled=3、hidden=true、无本体应用进程；两种请求形态均捕获、解冻 fixture 并显示对应测试链接页面。原 Intent 不修改，来源私有 extras 不转交。
+- 真正等待结果、结果码未知及 FORWARD_RESULT 请求继续保持原链路。共享捕获层、来源识别重用和脱敏原因日志用于防止静默跳过再次漏测。
+- 验证边界：模拟器为共享组件与请求形态测试，不能代替用户手机上的实际 Hook、微信 extras、网络和原内容页复测。原始日志、数据库和 URL 不提交仓库。
+
+原因、AOSP 依据与复现命令见 [FROZEN_CAPTURE_DIAGNOSIS.md](FROZEN_CAPTURE_DIAGNOSIS.md)。
+
 ## 0.0.82 本体冻结后独立运行
 
 - JVM：35 个测试套件、268 项测试，0 失败、0 错误；另有 12 项规则工具测试及发布验证脚本回归通过。

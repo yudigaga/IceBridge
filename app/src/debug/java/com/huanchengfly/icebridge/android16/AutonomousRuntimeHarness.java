@@ -1,6 +1,7 @@
 package com.huanchengfly.icebridge.android16;
 
 import android.content.Context;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Looper;
@@ -54,8 +55,9 @@ public final class AutonomousRuntimeHarness {
         } else if ("disable".equals(command)) {
             store.disable(USER);
             System.out.println("disabled=true");
-        } else if (!"status".equals(command) && !"web".equals(command) && !"explicit".equals(command) && !"online".equals(command)) {
-            throw new IllegalArgumentException("expected save, web, explicit, online, status or disable");
+        } else if (!"status".equals(command) && !"web".equals(command) && !"explicit".equals(command)
+                && !"online".equals(command) && !"capture-wechat".equals(command) && !"capture-qq".equals(command)) {
+            throw new IllegalArgumentException("expected save, web, explicit, capture-wechat, capture-qq, online, status or disable");
         }
         // Load from disk in this fresh process. No Provider or app-owned file is accessed.
         SystemRuntimeConfig.State restored = store.load(USER, SystemServerConfigContract.SCHEMA_VERSION);
@@ -87,7 +89,7 @@ public final class AutonomousRuntimeHarness {
                 printState("target-after", packages.read(FIXTURE, USER));
             }
         }
-        if ("web".equals(command) || "explicit".equals(command)) {
+        if ("web".equals(command) || "explicit".equals(command) || command.startsWith("capture-")) {
             if (restored == null || !restored.autonomousEnabled || !restored.recoveryEnabled) {
                 throw new IllegalStateException("no enabled retained system configuration");
             }
@@ -106,6 +108,24 @@ public final class AutonomousRuntimeHarness {
             AutonomousBridgeCoordinator.Request<Intent> request = new AutonomousBridgeCoordinator.Request<>(
                     kind, USER, "com.android.shell", HOST, FIXTURE, fingerprint, original,
                     false, restored.autoOpenLinks, restored.onlyFrozen);
+            if (command.startsWith("capture-")) {
+                boolean wechat = "capture-wechat".equals(command);
+                String carrier = wechat ? "com.tencent.mm" : "com.tencent.mobileqq";
+                String activity = wechat ? "com.tencent.mm.plugin.webview.ui.tools.MMWebViewUI"
+                        : "com.tencent.mobileqq.activity.QQBrowserActivity";
+                Intent source = new Intent().setComponent(new ComponentName(carrier, activity))
+                        .putExtra("rawUrl", url).putExtra("source-private", "must-not-be-forwarded");
+                // Activity.startActivity() still passes its source token with requestCode=-1.
+                SystemAutonomousCapture.Result capture = SystemAutonomousCapture.capture(source,
+                        USER, restored, carrier, true, -1);
+                System.out.println("capture:source=" + carrier + ";sourceToken=true;requestCode=-1;reason=" + capture.reason);
+                if (capture.request == null) throw new IllegalStateException("ordinary source Activity was not captured");
+                if (source.getData() != null || source.getAction() != null || !source.hasExtra("source-private")
+                        || capture.request.payload.hasExtra("source-private")) {
+                    throw new IllegalStateException("original source changed or private extras forwarded");
+                }
+                request = capture.request;
+            }
             SystemAutonomousLauncher launcher = new SystemAutonomousLauncher(context, BuildConfig.APPLICATION_ID,
                     (intent, user, source) -> intent.putExtra("autonomous_harness_replay", fingerprint),
                     (event, user, target) -> System.out.println("event=" + event + ";user=" + user + ";target=" + target));

@@ -2,6 +2,8 @@
 
 0.0.82 增加可选的系统独立运行模式。IceBridge 被 IceBox 禁用或隐藏后，已注入 `system_server` 的模块使用系统保存的配置处理链接、剪贴板、支付预解冻和在线规则更新，整个处理过程不需要解冻或启动 IceBridge 本体。
 
+请使用 0.0.83 或更新版本；0.0.82 会误判普通微信／QQ 跳转的来源令牌，提前跳过捕获。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)记录了日志依据和修复。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
+
 当前只接收用户 0 的配置。工作资料和其他用户不会继承该配置；目标被挂起（suspended）、卸载或状态无法确认时不解冻。实际 ROM 的系统接口、SELinux 和冻结后重启注入仍需单独验收。
 
 ## 启用与修改
@@ -58,19 +60,24 @@
 ```powershell
 ./tools/autonomous-fixture/build.ps1 -SdkRoot $env:ANDROID_HOME -JdkRoot $env:JAVA_HOME
 adb -s emulator-5556 root
-adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.82-debug.apk
+adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.83-debug.apk
 adb -s emulator-5556 install -r tools/autonomous-fixture/build/icebridge-autonomous-fixture.apk
-adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.82-debug.apk /data/local/tmp/icebridge-autonomous.apk
+adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.83-debug.apk /data/local/tmp/icebridge-autonomous.apk
 adb -s emulator-5556 shell 'su 1000 sh -c "CLASSPATH=/data/local/tmp/icebridge-autonomous.apk app_process /system/bin com.huanchengfly.icebridge.android16.AutonomousRuntimeHarness save"'
 adb -s emulator-5556 shell pm disable-user --user 0 io.github.yudigaga.icebridge
 adb -s emulator-5556 shell pm hide --user 0 io.github.yudigaga.icebridge
 adb -s emulator-5556 shell pm disable-user --user 0 io.github.icebridge.fixture
 adb -s emulator-5556 shell pm hide --user 0 io.github.icebridge.fixture
 adb -s emulator-5556 shell 'su 1000 sh -c "CLASSPATH=/data/local/tmp/icebridge-autonomous.apk app_process /system/bin com.huanchengfly.icebridge.android16.AutonomousRuntimeHarness web https://example.com/frozen-after-cache"'
+adb -s emulator-5556 shell pm disable-user --user 0 io.github.icebridge.fixture
+adb -s emulator-5556 shell pm hide --user 0 io.github.icebridge.fixture
+adb -s emulator-5556 shell 'su 1000 sh -c "CLASSPATH=/data/local/tmp/icebridge-autonomous.apk app_process /system/bin com.huanchengfly.icebridge.android16.AutonomousRuntimeHarness capture-wechat https://example.com/wechat-source"'
 adb -s emulator-5556 shell 'su 1000 sh -c "CLASSPATH=/data/local/tmp/icebridge-autonomous.apk app_process /system/bin com.huanchengfly.icebridge.android16.AutonomousRuntimeHarness online"'
 ```
 
 使用 `dumpsys activity`、页面截图和目标收到的 URI 核对实际页面；同时检查本体仍为 disabled/hidden 且 `pidof` 没有本体进程。Harness 通过 UID 校验，但运行在独立 `app_process`，其 SELinux 域和真实 system_server 不同；不能据此宣称系统 Hook 或所有 ROM 的 SELinux 权限已验证。
+
+`capture-wechat`／`capture-qq` 在真实 PM 和启动器之前运行共享捕获层，使用来源 token＋requestCode=-1 的 Activity 请求形态。每次重新测试前应再次冻结 fixture 目标；这两个命令用于覆盖普通 `web` 命令没有执行的捕获过滤阶段。
 
 真实 IceBox／LSPosed 验收应记录本体 disabled/hidden 状态和进程、目标内容页、超过 120 秒、重新冻结目标后的第二次点击、冻结状态重启后恢复、冻结期间在线规则更新、配置关闭后不复活，以及支付 SDK 原始回调。AOSP PM 测试不能证明 IceBox 管理界面的显示已同步，也不能证明设备管理器的 suspension 可撤销。
 

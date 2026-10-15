@@ -21,6 +21,8 @@ For setup and the recommended LSPosed scope, see [native link capture](docs/NATI
 
 In **Bridge and automation**, enable **Run independently after freezing IceBridge**. Keep the app unfrozen until the system confirms that the current configuration has been saved, then freeze it with IceBox. The opt-in system runtime retains rules and enabled features, reads live target package state, thaws and launches targets without an IceBridge Activity, and updates the owned online rule feed. It never thaws IceBridge itself.
 
+Use 0.0.83 or later: it fixes ordinary WeChat/QQ Activity starts being mistaken for result requests. After upgrading, restart the device to load the new system module; see the [diagnosis and regression](docs/FROZEN_CAPTURE_DIAGNOSIS.md).
+
 This mode currently supports Android user 0 and disabled/hidden packages. Keep the LSPosed module and `system` scope enabled. After changing rules or disabling the mode, wait for a fresh system acknowledgement before freezing the app again. Installation, ROM restrictions, actual framework injection after reboot and payment callbacks require device verification; see [setup and validation boundaries](docs/AUTONOMOUS_RUNTIME.md).
 
 ## Appearance

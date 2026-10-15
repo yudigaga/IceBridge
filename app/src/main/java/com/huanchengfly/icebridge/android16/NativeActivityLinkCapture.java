@@ -17,7 +17,21 @@ public final class NativeActivityLinkCapture {
     private NativeActivityLinkCapture() {
     }
 
+    /** Recognizes the carrier Activity without reading its private extras. */
+    public static boolean isSupportedActivity(Intent intent) {
+        return supportedSource(intent) != null;
+    }
+
     public static CapturedLink capture(Intent intent) {
+        String source = supportedSource(intent);
+        if (source == null) return null;
+        ComponentName component = intent.getComponent();
+        String url = IntentUrlExtractor.findHttpUrl(intent);
+        return url == null ? null : new CapturedLink(url, component.getPackageName(),
+                component.getClassName(), source);
+    }
+
+    private static String supportedSource(Intent intent) {
         if (intent == null) {
             return null;
         }
@@ -27,16 +41,13 @@ public final class NativeActivityLinkCapture {
         }
         String packageName = component.getPackageName();
         String activityName = component.getClassName();
-        String source;
         if (WECHAT_PACKAGE.equals(packageName) && WECHAT_WEBVIEW.equals(activityName)) {
-            source = "wechat_webview";
+            return "wechat_webview";
         } else if (QQ_PACKAGE.equals(packageName) && QQ_BROWSER.equals(activityName)) {
-            source = "qq_browser";
+            return "qq_browser";
         } else {
             return null;
         }
-        String url = IntentUrlExtractor.findHttpUrl(intent);
-        return url == null ? null : new CapturedLink(url, packageName, activityName, source);
     }
 
     public static final class CapturedLink {
