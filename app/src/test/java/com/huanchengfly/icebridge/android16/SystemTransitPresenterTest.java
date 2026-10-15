@@ -8,6 +8,80 @@ import static org.junit.Assert.*;
 public class SystemTransitPresenterTest {
     private static final String TARGET = "com.example.target";
 
+    @Test public void cardIsOptInAndDisabledStagesCreateNoUiWork() {
+        Fixture fixture = new Fixture(false);
+        fixture.stage(1, SystemTransitPresenter.Stage.THAWING);
+        fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
+        assertTrue(fixture.ui.pending.isEmpty());
+        fixture.ui.runReady();
+        assertEquals(0, fixture.registrations);
+        assertEquals(0, fixture.host.visibilityChecks);
+        assertEquals(0, fixture.host.shows);
+        assertNull(fixture.host.session);
+    }
+
+    @Test public void enablingStartsOnlyANewTransaction() {
+        Fixture fixture = new Fixture(false);
+        fixture.stage(1, SystemTransitPresenter.Stage.THAWING);
+        fixture.presenter.setEnabled(true);
+        fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        assertEquals(0, fixture.host.shows);
+        fixture.stage(2, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        assertEquals(2, fixture.host.session.id);
+        assertEquals(1, fixture.registrations);
+    }
+
+    @Test public void disablingClosesActiveCardWithoutWaitingForUiAndLateStageStaysClosed() {
+        Fixture fixture = new Fixture();
+        fixture.stage(1, SystemTransitPresenter.Stage.THAWING);
+        fixture.ui.runReady();
+        fixture.presenter.setEnabled(false);
+        assertNotNull("Setting dispatch must not wait for window removal", fixture.host.session);
+        fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        assertNull(fixture.host.session);
+        fixture.presenter.setEnabled(true);
+        fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        assertNull(fixture.host.session);
+        fixture.stage(2, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        assertEquals(2, fixture.host.session.id);
+        assertEquals("Enabling again reuses the protected receiver", 1, fixture.registrations);
+    }
+
+    @Test public void disableInvalidatesQueuedStageEvenWhenReenabledBeforeQueueDrains() {
+        Fixture fixture = new Fixture();
+        fixture.stage(1, SystemTransitPresenter.Stage.THAWING);
+        fixture.presenter.setEnabled(false);
+        fixture.stage(2, SystemTransitPresenter.Stage.THAWING);
+        fixture.presenter.setEnabled(true);
+        fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
+        fixture.stage(2, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        assertEquals(0, fixture.registrations);
+        assertEquals(0, fixture.host.shows);
+        fixture.stage(3, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        assertEquals(3, fixture.host.session.id);
+        assertEquals(1, fixture.host.shows);
+    }
+
+    @Test public void disablingDuringRegistrationCannotShowWindowAfterOptOut() {
+        FakeDispatcher ui = new FakeDispatcher();
+        FakeHost host = new FakeHost();
+        SystemTransitPresenter presenter = new SystemTransitPresenter(ui, host, message -> { },
+                () -> ui.now, owner -> owner.setEnabled(false));
+        presenter.setEnabled(true);
+        presenter.onStage(1, 0, TARGET, SystemTransitPresenter.Stage.THAWING, 0xff7e57c2, "light");
+        ui.runReady();
+        assertNull(host.session);
+        assertEquals(0, host.visibilityChecks);
+        assertEquals(0, host.shows);
+    }
+
     @Test public void backendDoesNotWaitForWindowThread() {
         Fixture fixture = new Fixture();
         fixture.stage(1, SystemTransitPresenter.Stage.THAWING);
@@ -140,6 +214,7 @@ public class SystemTransitPresenterTest {
                     registrations[0]++;
                     if (registrations[0] == 1) throw new IllegalStateException("AMS not ready");
                 });
+        presenter.setEnabled(true);
         // Construction and backend dispatch must not perform registration or wait on AMS.
         assertEquals(0, registrations[0]);
         presenter.onStage(1, 0, TARGET, SystemTransitPresenter.Stage.THAWING, 0xff7e57c2, "light");
@@ -165,8 +240,12 @@ public class SystemTransitPresenterTest {
     private static final class Fixture {
         final FakeDispatcher ui = new FakeDispatcher();
         final FakeHost host = new FakeHost();
+        int registrations;
         final SystemTransitPresenter presenter = new SystemTransitPresenter(ui, host,
-                message -> { throw new IllegalStateException("test logger unavailable"); }, () -> ui.now);
+                message -> { throw new IllegalStateException("test logger unavailable"); }, () -> ui.now,
+                owner -> registrations++);
+        Fixture() { this(true); }
+        Fixture(boolean enabled) { presenter.setEnabled(enabled); }
         void stage(long id, SystemTransitPresenter.Stage stage) {
             presenter.onStage(id, 0, TARGET, stage, 0xff7e57c2, "light");
         }
@@ -177,8 +256,11 @@ public class SystemTransitPresenterTest {
         boolean visible = true;
         boolean failShow;
         boolean failDismiss;
-        @Override public boolean canShow() { return visible; }
+        int visibilityChecks;
+        int shows;
+        @Override public boolean canShow() { visibilityChecks++; return visible; }
         @Override public void show(TransitSessionPolicy.Session value) {
+            shows++;
             if (failShow) throw new IllegalStateException("window unavailable");
             session = value;
         }

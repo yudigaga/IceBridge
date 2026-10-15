@@ -69,12 +69,140 @@ public class SystemOnlineRuleClientTest {
         assertEquals(edited.transitAppearance, after.transitAppearance);
     }
 
+    @Test public void providerCardSwitchWinsBothDirectionsWhileRetainingNewerOnlineRules() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        for (boolean enabled : new boolean[]{false, true}) {
+            SystemRuntimeConfig.State retained = cardState(state(true, latest.rules, cache(latest)), !enabled);
+            SystemRuntimeConfig.State incoming = cardState(state(true,
+                    rules(manual("manual.example.com"), online("old.example.com")), metadata(old)), enabled);
+            SystemRuntimeConfig.State merged = SystemOnlineRuleClient.mergeProvider(incoming, retained);
+            assertEquals(enabled, merged.transitCardEnabled);
+            assertEquals(4, merged.online.highestRevision);
+            assertEquals(latest.raw, merged.online.activeRaw);
+            assertEquals("manual.example.com", merged.scopedRules.get(0).host);
+            assertEquals("new.example.com", merged.scopedRules.get(1).host);
+        }
+    }
+
+    @Test public void onlineDownloadDoesNotOverwriteCardSwitchEditedDuringHttp() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        for (boolean enabled : new boolean[]{false, true}) {
+            SystemRuntimeConfig.State before = cardState(state(true, old.rules, cache(old)), !enabled);
+            SystemOnlineRuleClient.Result downloaded = new SystemOnlineRuleClient.Result(before, latest);
+            SystemRuntimeConfig.State edited = cardState(before, enabled);
+            SystemRuntimeConfig.State after = downloaded.applyTo(edited, 200);
+            assertEquals(enabled, after.transitCardEnabled);
+            assertEquals(4, after.online.highestRevision);
+            assertEquals(latest.raw, after.online.activeRaw);
+            assertEquals(old.raw, after.online.backupRaw);
+        }
+    }
+
+    @Test public void providerSmallWindowChoiceWinsBothDirectionsWhileRetainingNewerOnlineRules() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        for (boolean enabled : new boolean[]{false, true}) {
+            SystemRuntimeConfig.State retained = smallWindowState(cardState(
+                    state(true, latest.rules, cache(latest)), true), !enabled);
+            SystemRuntimeConfig.State incoming = smallWindowState(cardState(state(true,
+                    rules(manual("manual.example.com"), online("old.example.com")), metadata(old)), true), enabled);
+            SystemRuntimeConfig.State merged = SystemOnlineRuleClient.mergeProvider(incoming, retained);
+            assertEquals(enabled, merged.openLinksInSmallWindow);
+            assertTrue(merged.transitCardEnabled);
+            assertEquals(4, merged.online.highestRevision);
+            assertEquals(latest.raw, merged.online.activeRaw);
+            assertEquals("manual.example.com", merged.scopedRules.get(0).host);
+            assertEquals("new.example.com", merged.scopedRules.get(1).host);
+        }
+    }
+
+    @Test public void onlineDownloadPreservesSmallWindowChoiceEditedDuringHttpAndOtherUiSettings() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        for (boolean enabled : new boolean[]{false, true}) {
+            SystemRuntimeConfig.State before = smallWindowState(cardState(
+                    state(true, old.rules, cache(old)), true), !enabled);
+            SystemOnlineRuleClient.Result downloaded = new SystemOnlineRuleClient.Result(before, latest);
+            SystemRuntimeConfig.State edited = themedState(smallWindowState(before, enabled),
+                    0xff00796b, ThemePolicy.APPEARANCE_DARK);
+            SystemRuntimeConfig.State after = downloaded.applyTo(edited, 200);
+            assertEquals(enabled, after.openLinksInSmallWindow);
+            assertTrue(after.transitCardEnabled);
+            assertEquals(edited.transitSeedColor, after.transitSeedColor);
+            assertEquals(edited.transitAppearance, after.transitAppearance);
+            assertEquals(4, after.online.highestRevision);
+            assertEquals(latest.raw, after.online.activeRaw);
+            assertEquals(old.raw, after.online.backupRaw);
+        }
+    }
+
+    @Test public void providerSelectedPackagesReplaceRetainedSelectionWithoutLosingNewerOnlineRules() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        for (String[] selection : new String[][]{{"com.example.updated"}, new String[0]}) {
+            SystemRuntimeConfig.State retained = selectedState(state(true, latest.rules, cache(latest)),
+                    new String[]{"com.example.old"});
+            SystemRuntimeConfig.State incoming = selectedState(state(true,
+                    rules(manual("manual.example.com"), online("old.example.com")), metadata(old)), selection);
+            SystemRuntimeConfig.State merged = SystemOnlineRuleClient.mergeProvider(incoming, retained);
+            assertEquals(incoming.smallWindowPackages, merged.smallWindowPackages);
+            assertEquals(4, merged.online.highestRevision);
+            assertEquals(latest.raw, merged.online.activeRaw);
+            assertEquals("manual.example.com", merged.scopedRules.get(0).host);
+            assertEquals("new.example.com", merged.scopedRules.get(1).host);
+        }
+    }
+
+    @Test public void onlineDownloadUsesLatestSelectedPackagesIncludingExplicitEmptySelection() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        for (String[] selection : new String[][]{{"com.example.updated"}, new String[0]}) {
+            SystemRuntimeConfig.State before = selectedState(smallWindowState(cardState(
+                    state(true, old.rules, cache(old)), true), true), new String[]{"com.example.old"});
+            SystemOnlineRuleClient.Result downloaded = new SystemOnlineRuleClient.Result(before, latest);
+            SystemRuntimeConfig.State edited = themedState(selectedState(before, selection),
+                    0xff00796b, ThemePolicy.APPEARANCE_DARK);
+            SystemRuntimeConfig.State after = downloaded.applyTo(edited, 200);
+            assertEquals(edited.smallWindowPackages, after.smallWindowPackages);
+            assertTrue(after.openLinksInSmallWindow);
+            assertTrue(after.transitCardEnabled);
+            assertEquals(edited.transitSeedColor, after.transitSeedColor);
+            assertEquals(edited.transitAppearance, after.transitAppearance);
+            assertEquals(latest.raw, after.online.activeRaw);
+            assertEquals(old.raw, after.online.backupRaw);
+        }
+    }
+
+    private static SystemRuntimeConfig.State selectedState(SystemRuntimeConfig.State state,
+                                                           String[] selected) throws IOException {
+        return new SystemRuntimeConfig.State(state.providerSchemaVersion, state.userId, state.savedAtEpochMillis,
+                state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
+                state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
+                state.onlineUpdatesEnabled, state.encodedRules(), state.online, state.transitSeedColor,
+                state.transitAppearance, state.transitCardEnabled, state.openLinksInSmallWindow, selected);
+    }
+
+    private static SystemRuntimeConfig.State smallWindowState(SystemRuntimeConfig.State state,
+                                                              boolean enabled) throws IOException {
+        return new SystemRuntimeConfig.State(state.providerSchemaVersion, state.userId, state.savedAtEpochMillis,
+                state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
+                state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
+                state.onlineUpdatesEnabled, state.encodedRules(), state.online, state.transitSeedColor,
+                state.transitAppearance, state.transitCardEnabled, enabled, state.smallWindowPackages.toArray(new String[0]));
+    }
+
+    private static SystemRuntimeConfig.State cardState(SystemRuntimeConfig.State state,
+                                                       boolean enabled) throws IOException {
+        return new SystemRuntimeConfig.State(state.providerSchemaVersion, state.userId, state.savedAtEpochMillis,
+                state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
+                state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
+                state.onlineUpdatesEnabled, state.encodedRules(), state.online, state.transitSeedColor,
+                state.transitAppearance, enabled, state.openLinksInSmallWindow, state.smallWindowPackages.toArray(new String[0]));
+    }
+
     private static SystemRuntimeConfig.State themedState(SystemRuntimeConfig.State state,
                                                          int seedColor, String appearance) throws IOException {
         return new SystemRuntimeConfig.State(state.providerSchemaVersion, state.userId, state.savedAtEpochMillis,
                 state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
                 state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
-                state.onlineUpdatesEnabled, state.encodedRules(), state.online, seedColor, appearance);
+                state.onlineUpdatesEnabled, state.encodedRules(), state.online, seedColor, appearance,
+                state.transitCardEnabled, state.openLinksInSmallWindow, state.smallWindowPackages.toArray(new String[0]));
     }
 
     @Test public void providerCurrentRevisionDoesNotGetReplacedByRetainedOlderBackup() throws Exception {

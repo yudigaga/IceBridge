@@ -1,5 +1,7 @@
 package com.huanchengfly.icebridge.utils;
 
+import com.huanchengfly.icebridge.SystemServerConfigContract;
+
 import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
@@ -100,6 +102,9 @@ public final class DiagnosticLogExporter {
             append(stream, "automaticOpenLinksEnabled=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("auto_open_links", false) + "\n");
             append(stream, "systemServerConfig=" + describeSystemServerConfig() + "\n");
             append(stream, "nativeLinkCapture=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("native_link_capture", false) + "\n");
+            append(stream, "transitCardEnabled=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean(SystemServerConfigContract.KEY_TRANSIT_CARD_ENABLED, false) + "\n");
+            append(stream, "openLinksInSmallWindow=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW, false) + "\n");
+            append(stream, "smallWindowTargets=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getStringSet(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, java.util.Collections.emptySet()).size() + "\n");
             append(stream, "paymentSdkBridge=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("payment_sdk_bridge", true) + "\n");
             append(stream, "onlyFrozenLinkTargets=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("only_frozen_link_targets", true) + "\n");
             append(stream, "browserFallback=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("link_browser_fallback", true) + "\n");

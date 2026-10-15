@@ -19,10 +19,12 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -32,8 +34,10 @@ public final class SystemRuntimeConfig {
     public static final int VERSION = 1;
     // Two 1 MB online bundles may grow when represented as JSON strings, plus scoped rules.
     public static final int MAX_BYTES = 5 * 1024 * 1024;
+    public static final int MAX_SMALL_WINDOW_PACKAGES = 512;
     private static final String FORMAT = "icebridge-system-runtime";
     private static final Pattern HASH = Pattern.compile("[0-9a-f]{64}");
+    private static final Pattern PACKAGE = Pattern.compile("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+");
 
     private SystemRuntimeConfig() { }
 
@@ -52,6 +56,9 @@ public final class SystemRuntimeConfig {
         public final boolean onlineUpdatesEnabled;
         public final int transitSeedColor;
         public final String transitAppearance;
+        public final boolean transitCardEnabled;
+        public final boolean openLinksInSmallWindow;
+        public final Set<String> smallWindowPackages;
         public final List<LinkRuleEntry> scopedRules;
         public final OnlineState online;
 
@@ -71,6 +78,43 @@ public final class SystemRuntimeConfig {
                      boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
                      boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled, String[] scopedRules,
                      OnlineState online, int transitSeedColor, String transitAppearance) throws IOException {
+            this(providerSchemaVersion, userId, savedAtEpochMillis, autonomousEnabled, recoveryEnabled,
+                    autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge, onlyFrozen,
+                    browserFallback, onlineUpdatesEnabled, scopedRules, online,
+                    transitSeedColor, transitAppearance, false);
+        }
+
+        public State(int providerSchemaVersion, int userId, long savedAtEpochMillis,
+                     boolean autonomousEnabled, boolean recoveryEnabled, boolean autoOpenLinks,
+                     boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
+                     boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled, String[] scopedRules,
+                     OnlineState online, int transitSeedColor, String transitAppearance,
+                     boolean transitCardEnabled) throws IOException {
+            this(providerSchemaVersion, userId, savedAtEpochMillis, autonomousEnabled, recoveryEnabled,
+                    autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge, onlyFrozen,
+                    browserFallback, onlineUpdatesEnabled, scopedRules, online,
+                    transitSeedColor, transitAppearance, transitCardEnabled, false);
+        }
+
+        public State(int providerSchemaVersion, int userId, long savedAtEpochMillis,
+                     boolean autonomousEnabled, boolean recoveryEnabled, boolean autoOpenLinks,
+                     boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
+                     boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled, String[] scopedRules,
+                     OnlineState online, int transitSeedColor, String transitAppearance,
+                     boolean transitCardEnabled, boolean openLinksInSmallWindow) throws IOException {
+            this(providerSchemaVersion, userId, savedAtEpochMillis, autonomousEnabled, recoveryEnabled,
+                    autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge, onlyFrozen,
+                    browserFallback, onlineUpdatesEnabled, scopedRules, online,
+                    transitSeedColor, transitAppearance, transitCardEnabled, openLinksInSmallWindow, null);
+        }
+
+        public State(int providerSchemaVersion, int userId, long savedAtEpochMillis,
+                     boolean autonomousEnabled, boolean recoveryEnabled, boolean autoOpenLinks,
+                     boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
+                     boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled, String[] scopedRules,
+                     OnlineState online, int transitSeedColor, String transitAppearance,
+                     boolean transitCardEnabled, boolean openLinksInSmallWindow,
+                     String[] smallWindowPackages) throws IOException {
             checkUserId(userId);
             require(providerSchemaVersion > 0 && providerSchemaVersion <= 10000, "runtime-provider-schema");
             require(savedAtEpochMillis >= 0, "runtime-saved-at");
@@ -90,6 +134,13 @@ public final class SystemRuntimeConfig {
             this.onlineUpdatesEnabled = onlineUpdatesEnabled;
             this.transitSeedColor = transitSeedColor;
             this.transitAppearance = transitAppearance;
+            this.transitCardEnabled = transitCardEnabled;
+            this.openLinksInSmallWindow = openLinksInSmallWindow;
+            try {
+                this.smallWindowPackages = normalizeSmallWindowPackages(smallWindowPackages);
+            } catch (IllegalArgumentException invalidPackages) {
+                throw new IOException("runtime-small-window-packages", invalidPackages);
+            }
             try {
                 this.scopedRules = ScopedRuleResolver.decode(scopedRules == null ? null : scopedRules.clone());
             } catch (IllegalArgumentException error) {
@@ -105,7 +156,8 @@ public final class SystemRuntimeConfig {
             return new State(providerSchemaVersion, userId, savedAt, autonomousEnabled,
                     recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
                     paymentSdkBridge, onlyFrozen, browserFallback, onlineUpdatesEnabled, mergedRules, replacement,
-                    transitSeedColor, transitAppearance);
+                    transitSeedColor, transitAppearance, transitCardEnabled, openLinksInSmallWindow,
+                    smallWindowPackages.toArray(new String[0]));
         }
     }
 
@@ -180,6 +232,11 @@ public final class SystemRuntimeConfig {
         root.addProperty("onlineUpdatesEnabled", state.onlineUpdatesEnabled);
         root.addProperty("transitSeedColor", state.transitSeedColor);
         root.addProperty("transitAppearance", state.transitAppearance);
+        root.addProperty("transitCardEnabled", state.transitCardEnabled);
+        root.addProperty("openLinksInSmallWindow", state.openLinksInSmallWindow);
+        JsonArray smallWindowPackages = new JsonArray();
+        for (String packageName : state.smallWindowPackages) smallWindowPackages.add(new JsonPrimitive(packageName));
+        root.add("smallWindowPackages", smallWindowPackages);
         JsonArray rules = new JsonArray();
         for (String rule : state.encodedRules()) rules.add(new JsonPrimitive(rule));
         root.add("scopedRules", rules);
@@ -205,7 +262,9 @@ public final class SystemRuntimeConfig {
         State baseline = new State(state.providerSchemaVersion, state.userId, 0, state.autonomousEnabled,
                 state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture, state.clipboardAutoOpen,
                 state.paymentSdkBridge, state.onlyFrozen, state.browserFallback, state.onlineUpdatesEnabled,
-                state.encodedRules(), metadata, state.transitSeedColor, state.transitAppearance);
+                state.encodedRules(), metadata, state.transitSeedColor, state.transitAppearance,
+                state.transitCardEnabled, state.openLinksInSmallWindow,
+                state.smallWindowPackages.toArray(new String[0]));
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(encode(baseline));
             StringBuilder result = new StringBuilder(64);
@@ -235,7 +294,8 @@ public final class SystemRuntimeConfig {
             fields(root, "format", "version", "providerSchemaVersion", "userId", "savedAtEpochMillis",
                     "autonomousEnabled", "recoveryEnabled", "autoOpenLinks", "nativeLinkCapture",
                     "clipboardAutoOpen", "paymentSdkBridge", "onlyFrozen", "browserFallback", "onlineUpdatesEnabled",
-                    "transitSeedColor", "transitAppearance", "scopedRules", "online");
+                    "transitSeedColor", "transitAppearance", "transitCardEnabled", "openLinksInSmallWindow", "smallWindowPackages",
+                    "scopedRules", "online");
             require(FORMAT.equals(string(root, "format", 64)), "runtime-format");
             require(integer(root, "version") == VERSION, "runtime-version");
             long userId = integer(root, "userId");
@@ -268,11 +328,26 @@ public final class SystemRuntimeConfig {
                     "runtime-transit-seed-color");
             String appearance = root.has("transitAppearance") ? string(root, "transitAppearance", 16)
                     : ThemePolicy.APPEARANCE_SYSTEM;
+            boolean cardEnabled = root.has("transitCardEnabled") && bool(root, "transitCardEnabled");
+            boolean smallWindow = root.has("openLinksInSmallWindow") && bool(root, "openLinksInSmallWindow");
+            String[] selectedPackages = null;
+            if (root.has("smallWindowPackages")) {
+                JsonElement selected = root.get("smallWindowPackages");
+                require(selected.isJsonArray() && selected.getAsJsonArray().size() <= MAX_SMALL_WINDOW_PACKAGES,
+                        "runtime-small-window-packages");
+                selectedPackages = new String[selected.getAsJsonArray().size()];
+                for (int i = 0; i < selectedPackages.length; i++) {
+                    JsonElement packageName = selected.getAsJsonArray().get(i);
+                    require(packageName.isJsonPrimitive() && packageName.getAsJsonPrimitive().isString(),
+                            "runtime-small-window-packages");
+                    selectedPackages[i] = packageName.getAsString();
+                }
+            }
             return new State((int) schema, (int) userId, integer(root, "savedAtEpochMillis"),
                     bool(root, "autonomousEnabled"), bool(root, "recoveryEnabled"), bool(root, "autoOpenLinks"),
                     bool(root, "nativeLinkCapture"), bool(root, "clipboardAutoOpen"), bool(root, "paymentSdkBridge"),
                     bool(root, "onlyFrozen"), bool(root, "browserFallback"), bool(root, "onlineUpdatesEnabled"),
-                    rules, cache, (int) seedColor, appearance);
+                    rules, cache, (int) seedColor, appearance, cardEnabled, smallWindow, selectedPackages);
         } catch (RuntimeException error) {
             throw new IOException("runtime-json", error);
         }
@@ -297,6 +372,22 @@ public final class SystemRuntimeConfig {
     public static boolean isTransitAppearance(String appearance) {
         return ThemePolicy.APPEARANCE_SYSTEM.equals(appearance) || ThemePolicy.APPEARANCE_LIGHT.equals(appearance)
                 || ThemePolicy.APPEARANCE_DARK.equals(appearance);
+    }
+
+    /** Exact package membership only; stable sorting also gives each logical selection one fingerprint. */
+    public static Set<String> normalizeSmallWindowPackages(String[] packageNames) {
+        if (packageNames == null) return Collections.emptySet();
+        if (packageNames.length > MAX_SMALL_WINDOW_PACKAGES) {
+            throw new IllegalArgumentException("small-window-packages-limit");
+        }
+        Set<String> selected = new TreeSet<>();
+        for (String packageName : packageNames) {
+            if (packageName == null || packageName.length() > 255 || !PACKAGE.matcher(packageName).matches()) {
+                throw new IllegalArgumentException("small-window-package-invalid");
+            }
+            selected.add(packageName);
+        }
+        return Collections.unmodifiableSet(selected);
     }
 
     private static String nonNull(String value) { return value == null ? "" : value; }

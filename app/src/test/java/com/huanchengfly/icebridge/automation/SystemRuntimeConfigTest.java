@@ -190,11 +190,17 @@ public class SystemRuntimeConfigTest {
                 StandardCharsets.UTF_8)).getAsJsonObject();
         legacy.remove("transitSeedColor");
         legacy.remove("transitAppearance");
+        legacy.remove("transitCardEnabled");
+        legacy.remove("openLinksInSmallWindow");
+        legacy.remove("smallWindowPackages");
         assertFalse(legacy.has("transitSeedColor"));
         assertFalse(legacy.has("transitAppearance"));
         SystemRuntimeConfig.State restored = decode(legacy.toString());
         assertEquals(ThemePolicy.DEFAULT_SEED_COLOR, restored.transitSeedColor);
         assertEquals(ThemePolicy.APPEARANCE_SYSTEM, restored.transitAppearance);
+        assertFalse(restored.transitCardEnabled);
+        assertFalse(restored.openLinksInSmallWindow);
+        assertTrue(restored.smallWindowPackages.isEmpty());
         assertArrayEquals(original.encodedRules(), restored.encodedRules());
         assertEquals(5, restored.online.highestRevision);
         assertEquals(hash(latest), restored.online.highestSha256);
@@ -223,6 +229,186 @@ public class SystemRuntimeConfigTest {
                 themed(0xff7e57c2, ThemePolicy.APPEARANCE_LIGHT))));
         assertEquals(SystemRuntimeConfig.fingerprint(dark), SystemRuntimeConfig.fingerprint(
                 dark.withOnline(dark.online, dark.encodedRules(), 55555)));
+    }
+
+    @Test public void optionalTransitCardDefaultsOffWithoutLosingThemeRulesOrOnlineBackup() throws Exception {
+        String old = bundle(4, BUNDLE_RULE), latest = bundle(5, "");
+        SystemRuntimeConfig.OnlineState online = new SystemRuntimeConfig.OnlineState(latest,
+                hash(latest), old, hash(old), 5, hash(latest), true);
+        SystemRuntimeConfig.State original = new SystemRuntimeConfig.State(SCHEMA, 0, 12345, true,
+                true, true, false, true, false, true, false, true, new String[]{RULE, ONLINE},
+                online, 0xff7e57c2, ThemePolicy.APPEARANCE_DARK, true);
+        JsonObject legacy = JsonParser.parseString(new String(SystemRuntimeConfig.encode(original),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        legacy.remove("transitCardEnabled");
+        SystemRuntimeConfig.State restored = decode(legacy.toString());
+        assertFalse(restored.transitCardEnabled);
+        assertEquals(original.transitSeedColor, restored.transitSeedColor);
+        assertEquals(original.transitAppearance, restored.transitAppearance);
+        assertArrayEquals(original.encodedRules(), restored.encodedRules());
+        assertEquals(5, restored.online.highestRevision);
+        assertEquals(hash(latest), restored.online.highestSha256);
+        assertEquals(latest, restored.online.activeRaw);
+        assertEquals(old, restored.online.backupRaw);
+    }
+
+    @Test public void transitCardChoiceRoundTripsAndChangesFingerprintButNotRoutingPolicy() throws Exception {
+        SystemRuntimeConfig.State defaultState = themed(0xff7e57c2, ThemePolicy.APPEARANCE_DARK);
+        assertFalse(defaultState.transitCardEnabled);
+        for (boolean enabled : new boolean[]{false, true}) {
+            SystemRuntimeConfig.State original = new SystemRuntimeConfig.State(SCHEMA, 0, 12345,
+                    defaultState.autonomousEnabled, defaultState.recoveryEnabled, defaultState.autoOpenLinks,
+                    defaultState.nativeLinkCapture, defaultState.clipboardAutoOpen, defaultState.paymentSdkBridge,
+                    defaultState.onlyFrozen, defaultState.browserFallback, defaultState.onlineUpdatesEnabled,
+                    defaultState.encodedRules(), defaultState.online, defaultState.transitSeedColor,
+                    defaultState.transitAppearance, enabled);
+            SystemRuntimeConfig.State restored = SystemRuntimeConfig.decode(SystemRuntimeConfig.encode(original), 0, SCHEMA);
+            assertEquals(enabled, restored.transitCardEnabled);
+            assertEquals(defaultState.nativeLinkCapture, restored.nativeLinkCapture);
+            assertEquals(defaultState.recoveryEnabled, restored.recoveryEnabled);
+            assertArrayEquals(defaultState.encodedRules(), restored.encodedRules());
+            assertEquals(enabled, restored.withOnline(restored.online, restored.encodedRules(), 99999).transitCardEnabled);
+            assertEquals(SystemRuntimeConfig.fingerprint(original), SystemRuntimeConfig.fingerprint(
+                    restored.withOnline(restored.online, restored.encodedRules(), 99999)));
+            assertEquals(enabled, !SystemRuntimeConfig.fingerprint(defaultState).equals(
+                    SystemRuntimeConfig.fingerprint(original)));
+        }
+    }
+
+    @Test public void optionalTransitCardNeverCoercesExplicitInvalidValuesIntoConsent() throws Exception {
+        for (String invalid : new String[]{"\"true\"", "1", "null", "[]", "{}"}) {
+            rejectsJson(json().replace("\"transitCardEnabled\":false", "\"transitCardEnabled\":" + invalid),
+                    "runtime-boolean-transitCardEnabled");
+        }
+    }
+
+    @Test public void optionalSmallWindowDefaultsOffPreservingCardThemeRulesAndOnlineBackup() throws Exception {
+        String old = bundle(4, BUNDLE_RULE), latest = bundle(5, "");
+        SystemRuntimeConfig.OnlineState online = new SystemRuntimeConfig.OnlineState(latest,
+                hash(latest), old, hash(old), 5, hash(latest), true);
+        SystemRuntimeConfig.State original = new SystemRuntimeConfig.State(SCHEMA, 0, 12345, true,
+                true, true, false, true, false, true, false, true, new String[]{RULE, ONLINE},
+                online, 0xff7e57c2, ThemePolicy.APPEARANCE_DARK, true, true);
+        JsonObject legacy = JsonParser.parseString(new String(SystemRuntimeConfig.encode(original),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        legacy.remove("openLinksInSmallWindow");
+        SystemRuntimeConfig.State restored = decode(legacy.toString());
+        assertFalse(restored.openLinksInSmallWindow);
+        assertTrue(restored.transitCardEnabled);
+        assertEquals(original.transitSeedColor, restored.transitSeedColor);
+        assertEquals(original.transitAppearance, restored.transitAppearance);
+        assertArrayEquals(original.encodedRules(), restored.encodedRules());
+        assertEquals(5, restored.online.highestRevision);
+        assertEquals(hash(latest), restored.online.highestSha256);
+        assertEquals(latest, restored.online.activeRaw);
+        assertEquals(old, restored.online.backupRaw);
+    }
+
+    @Test public void smallWindowAndCardChoicesRoundTripAndHaveIndependentConfigIdentities() throws Exception {
+        java.util.Set<String> fingerprints = new java.util.HashSet<>();
+        for (boolean card : new boolean[]{false, true}) {
+            SystemRuntimeConfig.State cardOnly = new SystemRuntimeConfig.State(SCHEMA, 0, 12345, true,
+                    true, true, false, true, false, true, false, true, new String[]{RULE}, null,
+                    0xff7e57c2, ThemePolicy.APPEARANCE_DARK, card);
+            assertFalse("The card-only overload must not enable small windows", cardOnly.openLinksInSmallWindow);
+            for (boolean smallWindow : new boolean[]{false, true}) {
+                SystemRuntimeConfig.State original = new SystemRuntimeConfig.State(SCHEMA, 0, 12345, true,
+                        true, true, false, true, false, true, false, true, new String[]{RULE}, null,
+                        0xff7e57c2, ThemePolicy.APPEARANCE_DARK, card, smallWindow);
+                SystemRuntimeConfig.State restored = decode(new String(SystemRuntimeConfig.encode(original),
+                        StandardCharsets.UTF_8));
+                assertEquals(card, restored.transitCardEnabled);
+                assertEquals(smallWindow, restored.openLinksInSmallWindow);
+                SystemRuntimeConfig.State replacement = restored.withOnline(restored.online, restored.encodedRules(), 99999);
+                assertEquals(card, replacement.transitCardEnabled);
+                assertEquals(smallWindow, replacement.openLinksInSmallWindow);
+                assertEquals(SystemRuntimeConfig.fingerprint(original), SystemRuntimeConfig.fingerprint(replacement));
+                fingerprints.add(SystemRuntimeConfig.fingerprint(original));
+            }
+        }
+        assertEquals("Each pair of card/window choices needs its own acknowledgement", 4, fingerprints.size());
+    }
+
+    @Test public void optionalSmallWindowNeverCoercesExplicitInvalidValuesIntoConsent() throws Exception {
+        for (String invalid : new String[]{"\"true\"", "1", "null", "[]", "{}"}) {
+            rejectsJson(json().replace("\"openLinksInSmallWindow\":false", "\"openLinksInSmallWindow\":" + invalid),
+                    "runtime-boolean-openLinksInSmallWindow");
+        }
+    }
+
+    @Test public void selectedSmallWindowPackagesRoundTripAsAnImmutableSortedCopy() throws Exception {
+        String[] packages = {"com.example.zebra", "com.example.reader", "com.example.reader"};
+        SystemRuntimeConfig.State original = selected(packages, null);
+        packages[0] = "com.example.changed";
+        assertArrayEquals(new String[]{"com.example.reader", "com.example.zebra"},
+                original.smallWindowPackages.toArray(new String[0]));
+        try { original.smallWindowPackages.add("com.example.other"); fail("mutable selection"); }
+        catch (UnsupportedOperationException expected) { }
+        SystemRuntimeConfig.State restored = decode(new String(SystemRuntimeConfig.encode(original), StandardCharsets.UTF_8));
+        assertEquals(original.smallWindowPackages, restored.smallWindowPackages);
+        assertTrue(restored.openLinksInSmallWindow);
+        assertTrue(restored.transitCardEnabled);
+        assertArrayEquals(original.encodedRules(), restored.encodedRules());
+    }
+
+    @Test public void selectionFingerprintIgnoresOrderAndDuplicatesButTracksActualMembership() throws Exception {
+        SystemRuntimeConfig.State one = selected(new String[]{"com.example.zebra", "com.example.reader"}, null);
+        SystemRuntimeConfig.State same = selected(new String[]{"com.example.reader", "com.example.zebra", "com.example.reader"}, null);
+        assertEquals(SystemRuntimeConfig.fingerprint(one), SystemRuntimeConfig.fingerprint(same));
+        assertArrayEquals(SystemRuntimeConfig.encode(one), SystemRuntimeConfig.encode(same));
+        assertFalse(SystemRuntimeConfig.fingerprint(one).equals(SystemRuntimeConfig.fingerprint(
+                selected(new String[]{"com.example.reader"}, null))));
+        assertEquals(SystemRuntimeConfig.fingerprint(selected(null, null)),
+                SystemRuntimeConfig.fingerprint(selected(new String[0], null)));
+    }
+
+    @Test public void missingLegacySelectionStaysEmptyWithSwitchesThemeAndOnlineCachePreserved() throws Exception {
+        String old = bundle(4, BUNDLE_RULE), latest = bundle(5, "");
+        SystemRuntimeConfig.OnlineState online = new SystemRuntimeConfig.OnlineState(latest,
+                hash(latest), old, hash(old), 5, hash(latest), true);
+        SystemRuntimeConfig.State original = selected(new String[]{"com.example.reader"}, online);
+        JsonObject legacy = JsonParser.parseString(new String(SystemRuntimeConfig.encode(original),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        legacy.remove("smallWindowPackages");
+        SystemRuntimeConfig.State restored = decode(legacy.toString());
+        assertTrue(restored.smallWindowPackages.isEmpty());
+        assertTrue(restored.openLinksInSmallWindow);
+        assertTrue(restored.transitCardEnabled);
+        assertEquals(original.transitSeedColor, restored.transitSeedColor);
+        assertEquals(original.transitAppearance, restored.transitAppearance);
+        assertArrayEquals(original.encodedRules(), restored.encodedRules());
+        assertEquals(latest, restored.online.activeRaw);
+        assertEquals(old, restored.online.backupRaw);
+        assertEquals(5, restored.online.highestRevision);
+        assertEquals(hash(latest), restored.online.highestSha256);
+    }
+
+    @Test public void selectionRejectsWildcardsMalformedValuesAndOversizedListsWithoutTruncation() throws Exception {
+        for (String invalid : new String[]{null, "", "*", "com.*", "com..app", "com.1app", "com.app$", " com.app", "com.app "}) {
+            rejects(() -> selected(new String[]{invalid}, null), "runtime-small-window-packages");
+        }
+        String[] maximum = new String[SystemRuntimeConfig.MAX_SMALL_WINDOW_PACKAGES];
+        for (int i = 0; i < maximum.length; i++) maximum[i] = "com.example.app" + i;
+        assertEquals(512, decode(new String(SystemRuntimeConfig.encode(selected(maximum, null)),
+                StandardCharsets.UTF_8)).smallWindowPackages.size());
+        String[] oversized = new String[SystemRuntimeConfig.MAX_SMALL_WINDOW_PACKAGES + 1];
+        Arrays.fill(oversized, "com.example.reader");
+        rejects(() -> selected(oversized, null), "runtime-small-window-packages");
+        for (String malformed : new String[]{"null", "true", "\"com.example.reader\"", "{}", "[null]", "[1]", "[true]", "[\"*\"]"}) {
+            rejectsJson(json().replace("\"smallWindowPackages\":[]", "\"smallWindowPackages\":" + malformed),
+                    "runtime-small-window-packages");
+        }
+        JsonObject encoded = JsonParser.parseString(json()).getAsJsonObject();
+        com.google.gson.JsonArray tooMany = new com.google.gson.JsonArray();
+        for (String packageName : oversized) tooMany.add(packageName);
+        encoded.add("smallWindowPackages", tooMany);
+        rejectsJson(encoded.toString(), "runtime-small-window-packages");
+    }
+
+    private static SystemRuntimeConfig.State selected(String[] packages, SystemRuntimeConfig.OnlineState online) throws IOException {
+        return new SystemRuntimeConfig.State(SCHEMA, 0, 12345, true,
+                true, true, false, true, false, true, false, true, new String[]{RULE}, online,
+                0xff7e57c2, ThemePolicy.APPEARANCE_DARK, true, true, packages);
     }
 
     @Test public void explicitInvalidTransitThemeIsRejectedRatherThanTreatedAsLegacy() throws Exception {

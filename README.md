@@ -23,7 +23,11 @@ In **Bridge and automation**, enable **Run independently after freezing IceBridg
 
 Use 0.0.83 or later: it fixes ordinary WeChat/QQ Activity starts being mistaken for result requests. After upgrading, restart the device to load the new system module; see the [diagnosis and regression](docs/FROZEN_CAPTURE_DIAGNOSIS.md).
 
-Version 0.0.86 uses a compact centered card containing only the source/destination icons and a moving stream. It has no visible text or arrow, follows the synchronized day/night theme, and closes when the target's splash or app window is shown. It adds no fixed launch delay; [progress and timing](docs/TRANSIT_PROGRESS.md) distinguishes target presentation from content loading.
+Version 0.0.87 adds **Show transit card** under **Bridge and automation → Launch behavior**, off by default. Enable it to show a compact centered card containing only the source/destination icons and a moving stream. It has no visible text or arrow, follows the synchronized day/night theme, and closes when the target's splash or app window is shown. Turning it off also dismisses an active card and leaves thawing and routing enabled. It adds no fixed launch delay; [progress and timing](docs/TRANSIT_PROGRESS.md) distinguishes target presentation from content loading.
+
+Installing the new module version requires a device restart to reload its system code. Later changes to the card switch need no restart: unfreeze IceBridge, change the switch, wait for system confirmation, then freeze it again. The system retains this preference while IceBridge is frozen and across reboots.
+
+The separate **Open in small window** switch is also off by default. Choose destinations in **Small-window apps**; in independent mode, only selected ordinary link targets request a system freeform window. An empty selection applies to no apps. The ROM chooses size and placement. It does not change payment/result flows or the replay of an original source page. Unsupported systems may keep the normal window; the module does not force global freeform settings or retry an already submitted target launch. Both switches and the selected app list synchronize live after the initial module upgrade and reboot.
 
 For supported ordinary WeChat/QQ clicks, independent mode now takes over the original WebView launch after checking the route, so it opens only the target. If takeover fails, it attempts the original source request once. Payments, result requests and unsupported cases preserve their original flow.
 

@@ -1,6 +1,7 @@
 package com.huanchengfly.icebridge;
 
 import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
+import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 
 import org.junit.Test;
 
@@ -11,6 +12,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class SystemServerConfigContractTest {
     @Test public void unknownSnapshotUserIsRejected() {
@@ -156,6 +158,7 @@ public class SystemServerConfigContractTest {
         assertEquals(0, snapshot.onlineRevision);
         assertEquals(ThemePolicy.DEFAULT_SEED_COLOR, snapshot.transitSeedColor);
         assertEquals(ThemePolicy.APPEARANCE_SYSTEM, snapshot.transitAppearance);
+        assertFalse(snapshot.transitCardEnabled);
     }
 
     @Test public void transitThemeSurvivesSnapshotAndRuntimeConversion() throws Exception {
@@ -165,6 +168,77 @@ public class SystemServerConfigContractTest {
         assertEquals(ThemePolicy.APPEARANCE_LIGHT, snapshot.transitAppearance);
         assertEquals(snapshot.transitSeedColor, snapshot.toRuntimeState(123).transitSeedColor);
         assertEquals(snapshot.transitAppearance, snapshot.toRuntimeState(123).transitAppearance);
+        assertFalse(snapshot.transitCardEnabled);
+    }
+
+    @Test public void explicitTransitCardChoiceReachesPersistentRuntimeWithoutChangingRouting() throws Exception {
+        for (boolean enabled : new boolean[]{false, true}) {
+            SystemServerConfigContract.Snapshot snapshot = SystemServerConfigContract.parseValues(
+                    SystemServerConfigContract.SCHEMA_VERSION, SystemServerConfigContract.STATUS_OK, null,
+                    true, true, true, true, true, null, null, 0,
+                    true, true, true, true, 0, "", repeat('b', 64),
+                    0xff00796b, ThemePolicy.APPEARANCE_LIGHT, enabled);
+            assertTrue(snapshot.available);
+            assertEquals(enabled, snapshot.transitCardEnabled);
+            assertEquals(enabled, snapshot.toRuntimeState(123).transitCardEnabled);
+            assertFalse(snapshot.openLinksInSmallWindow);
+            assertFalse(snapshot.toRuntimeState(123).openLinksInSmallWindow);
+            assertTrue(snapshot.smallWindowPackages.isEmpty());
+            assertTrue(snapshot.toRuntimeState(123).nativeLinkCapture);
+            assertTrue(snapshot.toRuntimeState(123).recoveryEnabled);
+            assertEquals(0xff00796b, snapshot.toRuntimeState(123).transitSeedColor);
+        }
+    }
+
+    @Test public void smallWindowChoiceIsIndependentFromCardAndReachesPersistentRuntime() throws Exception {
+        for (boolean card : new boolean[]{false, true}) {
+            for (boolean smallWindow : new boolean[]{false, true}) {
+                SystemServerConfigContract.Snapshot snapshot = SystemServerConfigContract.parseValues(
+                        SystemServerConfigContract.SCHEMA_VERSION, SystemServerConfigContract.STATUS_OK, null,
+                        true, true, true, true, true, null, null, 0,
+                        true, true, true, true, 0, "", repeat('b', 64),
+                        0xff00796b, ThemePolicy.APPEARANCE_LIGHT, card, smallWindow);
+                assertTrue(snapshot.available);
+                assertEquals(card, snapshot.transitCardEnabled);
+                assertEquals(smallWindow, snapshot.openLinksInSmallWindow);
+                assertEquals(card, snapshot.toRuntimeState(123).transitCardEnabled);
+                assertEquals(smallWindow, snapshot.toRuntimeState(123).openLinksInSmallWindow);
+                assertTrue(snapshot.toRuntimeState(123).nativeLinkCapture);
+                assertTrue(snapshot.toRuntimeState(123).recoveryEnabled);
+            }
+        }
+    }
+
+    @Test public void selectedPackagesSurviveSnapshotAndRuntimeConversionWithoutMutableArrayLeak() throws Exception {
+        String[] packages = {"com.example.zebra", "com.example.reader"};
+        SystemServerConfigContract.Snapshot snapshot = selected(packages);
+        packages[0] = "com.example.changed";
+        assertTrue(snapshot.available);
+        assertArrayEquals(new String[]{"com.example.reader", "com.example.zebra"},
+                snapshot.smallWindowPackages.toArray(new String[0]));
+        assertEquals(snapshot.smallWindowPackages, snapshot.toRuntimeState(123).smallWindowPackages);
+        assertTrue(snapshot.toRuntimeState(123).openLinksInSmallWindow);
+        try { snapshot.smallWindowPackages.clear(); fail("mutable selection"); }
+        catch (UnsupportedOperationException expected) { }
+    }
+
+    @Test public void malformedOrOversizedSelectedPackagesCannotEnterRuntime() {
+        for (String invalid : new String[]{null, "*", "com.*", "com..app", "com.1app", " com.app"}) {
+            SystemServerConfigContract.Snapshot snapshot = selected(new String[]{invalid});
+            assertFalse(snapshot.available);
+            assertEquals("small-window-packages-invalid", snapshot.status);
+        }
+        String[] oversized = new String[SystemRuntimeConfig.MAX_SMALL_WINDOW_PACKAGES + 1];
+        Arrays.fill(oversized, "com.example.reader");
+        assertEquals("small-window-packages-invalid", selected(oversized).status);
+        assertTrue(selected(null).smallWindowPackages.isEmpty());
+    }
+
+    private static SystemServerConfigContract.Snapshot selected(String[] packages) {
+        return SystemServerConfigContract.parseValues(SystemServerConfigContract.SCHEMA_VERSION,
+                SystemServerConfigContract.STATUS_OK, null, true, true, true, true, true,
+                null, null, 0, true, true, true, true, 0, "", repeat('b', 64),
+                0xff00796b, ThemePolicy.APPEARANCE_LIGHT, true, true, packages);
     }
 
     @Test public void invalidTransitAppearanceAndTranslucentSeedCannotEnterRuntime() {

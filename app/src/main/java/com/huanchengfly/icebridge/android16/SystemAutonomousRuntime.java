@@ -90,7 +90,12 @@ public final class SystemAutonomousRuntime {
                                 AutonomousBridgeCoordinator.Stage.OPENING);
                     }
                 },
-                        (event, user, target) -> safeLog(event + ": user=" + user + ", target=" + target)),
+                        (event, user, target) -> safeLog(event + ": user=" + user + ", target=" + target),
+                        target -> {
+                            SystemRuntimeConfig.State latest = current(0);
+                            return latest != null && latest.openLinksInSmallWindow
+                                    && latest.smallWindowPackages.contains(target);
+                        }),
                 SystemClock::elapsedRealtime, (request, target, stage) -> {
                     TransitTrace trace = workerTrace;
                     if (trace != null) reportStage(trace, target, stage);
@@ -101,6 +106,7 @@ public final class SystemAutonomousRuntime {
     public void restore() {
         try {
             configuration = store.load(0, SystemServerConfigContract.SCHEMA_VERSION);
+            transit.setEnabled(configuration != null && configuration.autonomousEnabled && configuration.transitCardEnabled);
             if (configuration != null) logger.event("autonomous restored: user=0, rules="
                     + configuration.scopedRules.size() + ", revision=" + configuration.online.highestRevision);
         } catch (IOException error) {
@@ -156,6 +162,7 @@ public final class SystemAutonomousRuntime {
         try {
             if (!snapshot.autonomousEnabled) {
                 configuration = null;
+                transit.setEnabled(false);
                 transit.cancelAll("disabled");
                 store.disable(snapshot.userId);
                 persisted = true;
@@ -166,13 +173,17 @@ public final class SystemAutonomousRuntime {
                 store.save(incoming);
                 persisted = true;
                 configuration = incoming;
+                transit.setEnabled(incoming.transitCardEnabled);
                 AutonomousBridgeCoordinator.Capabilities capability = packages.capabilities();
                 ready = hooksReady && (!snapshot.nativeLinkCapture || uidImportance != null)
                         && capability.enableDisabled && capability.unhide
                         && packages.read(PROTECTED_PACKAGE, snapshot.userId).isKnown();
                 message = ready ? "配置已由系统持久保存，可冻结本体" : "配置已保存，但系统 Hook 或包管理能力不完整";
                 logger.event("autonomous synchronized: ready=" + ready + ", rules="
-                        + incoming.scopedRules.size() + ", revision=" + incoming.online.highestRevision);
+                        + incoming.scopedRules.size() + ", revision=" + incoming.online.highestRevision
+                        + ", transitCard=" + incoming.transitCardEnabled
+                        + ", smallWindow=" + incoming.openLinksInSmallWindow
+                        + ", smallWindowTargets=" + incoming.smallWindowPackages.size());
             }
         } catch (IOException error) {
             message = "系统配置保存失败：" + error.getMessage();
@@ -343,6 +354,7 @@ public final class SystemAutonomousRuntime {
         if (!own.isKnown() || !own.installed) {
             if (own.isKnown()) {
                 configuration = null;
+                transit.setEnabled(false);
                 try { store.disable(request.userId); } catch (IOException ignored) { }
             }
             logger.event("autonomous request ignored: module-not-installed-or-state-unknown");
@@ -440,7 +452,9 @@ public final class SystemAutonomousRuntime {
         trace.targetPackage = target;
         if (stage == AutonomousBridgeCoordinator.Stage.THAWING) trace.thawingAt = now;
         else trace.openingAt = now;
-        if (windowObservationReady) {
+        SystemRuntimeConfig.State latest = current(trace.userId);
+        if (windowObservationReady && trace.state.transitCardEnabled
+                && latest != null && latest.transitCardEnabled) {
             transit.onStage(trace.id, trace.userId, trace.sourcePackage, target,
                     stage == AutonomousBridgeCoordinator.Stage.THAWING
                             ? SystemTransitPresenter.Stage.THAWING : SystemTransitPresenter.Stage.OPENING,
@@ -505,6 +519,7 @@ public final class SystemAutonomousRuntime {
         if (!own.isKnown()) return;
         if (!own.installed) {
             configuration = null;
+            transit.setEnabled(false);
             try { store.disable(start.userId); } catch (IOException ignored) { }
             return;
         }

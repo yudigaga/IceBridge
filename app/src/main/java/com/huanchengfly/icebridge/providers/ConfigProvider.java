@@ -164,6 +164,14 @@ public class ConfigProvider extends ContentProvider {
             ThemePolicy.State theme = ThemePreferencesStore.get(getContext()).getSnapshot();
             snapshot.putInt(SystemServerConfigContract.KEY_TRANSIT_SEED_COLOR, theme.getSeedColor());
             snapshot.putString(SystemServerConfigContract.KEY_TRANSIT_APPEARANCE, theme.getAppearance());
+            boolean transitCard = preferences.getBoolean(SystemServerConfigContract.KEY_TRANSIT_CARD_ENABLED, false);
+            snapshot.putBoolean(SystemServerConfigContract.KEY_TRANSIT_CARD_ENABLED, transitCard);
+            boolean smallWindow = preferences.getBoolean(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW, false);
+            snapshot.putBoolean(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW, smallWindow);
+            String[] smallWindowPackages = preferences.getStringSet(
+                    SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, java.util.Collections.emptySet())
+                    .toArray(new String[0]);
+            snapshot.putStringArray(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, smallWindowPackages);
             boolean autonomous = preferences.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false);
             snapshot.putBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, autonomous);
             snapshot.putBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN,
@@ -231,7 +239,7 @@ public class ConfigProvider extends ContentProvider {
                     snapshot.getBoolean(SystemServerConfigContract.KEY_BROWSER_FALLBACK),
                     snapshot.getBoolean(SystemServerConfigContract.KEY_ONLINE_UPDATES), rules,
                     new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0),
-                    theme.getSeedColor(), theme.getAppearance());
+                    theme.getSeedColor(), theme.getAppearance(), transitCard, smallWindow, smallWindowPackages);
             String fingerprint = SystemRuntimeConfig.fingerprint(baseline);
             snapshot.putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, fingerprint);
             SharedPreferences status = runtimeStatus();

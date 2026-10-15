@@ -3,6 +3,7 @@ package com.huanchengfly.icebridge.android16;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Binder;
+import android.os.Bundle;
 import android.os.Process;
 
 import com.huanchengfly.icebridge.BuildConfig;
@@ -24,6 +25,10 @@ public final class SystemActivityLauncher {
     }
 
     public static int start(Context systemContext, Intent intent, int userId) throws Exception {
+        return start(systemContext, intent, userId, null);
+    }
+
+    public static int start(Context systemContext, Intent intent, int userId, Bundle options) throws Exception {
         if (Process.myUid() != Process.SYSTEM_UID) throw new SecurityException("system-uid-required");
         if (systemContext == null || intent == null || userId < 0) {
             throw new IllegalArgumentException("invalid-system-launch");
@@ -41,10 +46,8 @@ public final class SystemActivityLauncher {
             // A standalone system-UID process (and some system contexts) has no AMS-registered
             // IApplicationThread. Passing it can return START_PERMISSION_DENIED (-94) silently
             // through Context's void wrapper. A null caller retains the authenticated system UID.
-            Object result = start.invoke(service, null, "android", null, intent,
-                    intent.resolveTypeIfNeeded(systemContext.getContentResolver()),
-                    null, null, -1, 0, null, null, userId);
-            return requireSuccessfulResult(result);
+            return invokeStart(service, start, intent,
+                    intent.resolveTypeIfNeeded(systemContext.getContentResolver()), userId, options);
         } catch (InvocationTargetException error) {
             Throwable cause = error.getCause();
             if (cause instanceof Exception) throw (Exception) cause;
@@ -52,6 +55,21 @@ public final class SystemActivityLauncher {
             throw error;
         } finally {
             Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    /** The options bundle precedes userId in the exact Binder signature resolved above. */
+    static int invokeStart(Object service, Method start, Intent intent, String resolvedType,
+                           int userId, Bundle options) throws Exception {
+        try {
+            Object result = start.invoke(service, null, "android", null, intent, resolvedType,
+                    null, null, -1, 0, null, options, userId);
+            return requireSuccessfulResult(result);
+        } catch (InvocationTargetException error) {
+            Throwable cause = error.getCause();
+            if (cause instanceof Exception) throw (Exception) cause;
+            if (cause instanceof Error) throw (Error) cause;
+            throw error;
         }
     }
 

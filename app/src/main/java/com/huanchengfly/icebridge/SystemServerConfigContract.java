@@ -40,6 +40,9 @@ public final class SystemServerConfigContract {
     public static final String KEY_ONLINE_SHA256 = "online_rules_highest_sha256";
     public static final String KEY_TRANSIT_SEED_COLOR = "transit_seed_color";
     public static final String KEY_TRANSIT_APPEARANCE = "transit_appearance";
+    public static final String KEY_TRANSIT_CARD_ENABLED = "transit_card_enabled";
+    public static final String KEY_OPEN_LINKS_IN_SMALL_WINDOW = "open_links_in_small_window";
+    public static final String KEY_SMALL_WINDOW_PACKAGES = "small_window_packages";
     public static final String KEY_CONFIG_FINGERPRINT = "runtime_config_fingerprint";
     public static final String KEY_RUNTIME_READY = "runtime_ready";
     public static final String KEY_RUNTIME_PERSISTED_ACK = "runtime_persisted_ack";
@@ -92,7 +95,10 @@ public final class SystemServerConfigContract {
                 snapshot.getString(KEY_ONLINE_SHA256, ""),
                 snapshot.getString(KEY_CONFIG_FINGERPRINT, ""),
                 snapshot.getInt(KEY_TRANSIT_SEED_COLOR, ThemePolicy.DEFAULT_SEED_COLOR),
-                snapshot.getString(KEY_TRANSIT_APPEARANCE, ThemePolicy.APPEARANCE_SYSTEM));
+                snapshot.getString(KEY_TRANSIT_APPEARANCE, ThemePolicy.APPEARANCE_SYSTEM),
+                snapshot.getBoolean(KEY_TRANSIT_CARD_ENABLED, false),
+                snapshot.getBoolean(KEY_OPEN_LINKS_IN_SMALL_WINDOW, false),
+                snapshot.getStringArray(KEY_SMALL_WINDOW_PACKAGES));
     }
 
     // Kept independent of Android Bundle so the contract rules can be covered by local JVM tests.
@@ -127,6 +133,50 @@ public final class SystemServerConfigContract {
                                 boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled,
                                 long onlineRevision, String onlineSha256, String configFingerprint,
                                 int transitSeedColor, String transitAppearance) {
+        return parseValues(schemaVersion, status, error, recoveryEnabled, autoOpenLinks, nativeLinkCapture,
+                clipboardAutoOpen, paymentSdkBridge, frozenPackages, onlineHostRules, userId, autonomousEnabled,
+                onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                transitSeedColor, transitAppearance, false);
+    }
+
+    static Snapshot parseValues(Integer schemaVersion, String status, String error,
+                                boolean recoveryEnabled, boolean autoOpenLinks,
+                                boolean nativeLinkCapture, boolean clipboardAutoOpen,
+                                boolean paymentSdkBridge, String[] frozenPackages,
+                                String[] onlineHostRules, int userId, boolean autonomousEnabled,
+                                boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled,
+                                long onlineRevision, String onlineSha256, String configFingerprint,
+                                int transitSeedColor, String transitAppearance, boolean transitCardEnabled) {
+        return parseValues(schemaVersion, status, error, recoveryEnabled, autoOpenLinks, nativeLinkCapture,
+                clipboardAutoOpen, paymentSdkBridge, frozenPackages, onlineHostRules, userId, autonomousEnabled,
+                onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                transitSeedColor, transitAppearance, transitCardEnabled, false);
+    }
+
+    static Snapshot parseValues(Integer schemaVersion, String status, String error,
+                                boolean recoveryEnabled, boolean autoOpenLinks,
+                                boolean nativeLinkCapture, boolean clipboardAutoOpen,
+                                boolean paymentSdkBridge, String[] frozenPackages,
+                                String[] onlineHostRules, int userId, boolean autonomousEnabled,
+                                boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled,
+                                long onlineRevision, String onlineSha256, String configFingerprint,
+                                int transitSeedColor, String transitAppearance, boolean transitCardEnabled,
+                                boolean openLinksInSmallWindow) {
+        return parseValues(schemaVersion, status, error, recoveryEnabled, autoOpenLinks, nativeLinkCapture,
+                clipboardAutoOpen, paymentSdkBridge, frozenPackages, onlineHostRules, userId, autonomousEnabled,
+                onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                transitSeedColor, transitAppearance, transitCardEnabled, openLinksInSmallWindow, null);
+    }
+
+    static Snapshot parseValues(Integer schemaVersion, String status, String error,
+                                boolean recoveryEnabled, boolean autoOpenLinks,
+                                boolean nativeLinkCapture, boolean clipboardAutoOpen,
+                                boolean paymentSdkBridge, String[] frozenPackages,
+                                String[] onlineHostRules, int userId, boolean autonomousEnabled,
+                                boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled,
+                                long onlineRevision, String onlineSha256, String configFingerprint,
+                                int transitSeedColor, String transitAppearance, boolean transitCardEnabled,
+                                boolean openLinksInSmallWindow, String[] smallWindowPackages) {
         if (schemaVersion == null) {
             return Snapshot.unavailable("null-snapshot");
         }
@@ -139,6 +189,8 @@ public final class SystemServerConfigContract {
                     : error);
         }
         if (userId < 0 || userId > 999) return Snapshot.unavailable("snapshot-user-invalid");
+        try { SystemRuntimeConfig.normalizeSmallWindowPackages(smallWindowPackages); }
+        catch (IllegalArgumentException invalidPackages) { return Snapshot.unavailable("small-window-packages-invalid"); }
         if ((transitSeedColor >>> 24) != 0xff || !SystemRuntimeConfig.isTransitAppearance(transitAppearance)) {
             return Snapshot.unavailable("transit-theme-invalid");
         }
@@ -156,7 +208,7 @@ public final class SystemServerConfigContract {
             return Snapshot.available(recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
                     paymentSdkBridge, frozenPackages, onlineHostRules, userId, autonomousEnabled,
                     onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
-                    transitSeedColor, transitAppearance);
+                    transitSeedColor, transitAppearance, transitCardEnabled, openLinksInSmallWindow, smallWindowPackages);
         } catch (IllegalArgumentException invalidRules) {
             return Snapshot.unavailable("scoped-rules-invalid");
         }
@@ -182,6 +234,9 @@ public final class SystemServerConfigContract {
         public final String configFingerprint;
         public final int transitSeedColor;
         public final String transitAppearance;
+        public final boolean transitCardEnabled;
+        public final boolean openLinksInSmallWindow;
+        public final Set<String> smallWindowPackages;
 
         private Snapshot(boolean available, boolean recoveryEnabled, boolean autoOpenLinks,
                          boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge, String status,
@@ -201,6 +256,45 @@ public final class SystemServerConfigContract {
                          boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
                          boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
                          String configFingerprint, int transitSeedColor, String transitAppearance) {
+            this(available, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge,
+                    status, frozenPackages, onlineHostRules, userId, autonomousEnabled, onlyFrozen, browserFallback,
+                    onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                    transitSeedColor, transitAppearance, false);
+        }
+
+        private Snapshot(boolean available, boolean recoveryEnabled, boolean autoOpenLinks,
+                         boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge, String status,
+                         Set<String> frozenPackages, String[] onlineHostRules, int userId,
+                         boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
+                         boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
+                         String configFingerprint, int transitSeedColor, String transitAppearance,
+                         boolean transitCardEnabled) {
+            this(available, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge,
+                    status, frozenPackages, onlineHostRules, userId, autonomousEnabled, onlyFrozen, browserFallback,
+                    onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                    transitSeedColor, transitAppearance, transitCardEnabled, false);
+        }
+
+        private Snapshot(boolean available, boolean recoveryEnabled, boolean autoOpenLinks,
+                         boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge, String status,
+                         Set<String> frozenPackages, String[] onlineHostRules, int userId,
+                         boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
+                         boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
+                         String configFingerprint, int transitSeedColor, String transitAppearance,
+                         boolean transitCardEnabled, boolean openLinksInSmallWindow) {
+            this(available, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge,
+                    status, frozenPackages, onlineHostRules, userId, autonomousEnabled, onlyFrozen, browserFallback,
+                    onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
+                    transitSeedColor, transitAppearance, transitCardEnabled, openLinksInSmallWindow, null);
+        }
+
+        private Snapshot(boolean available, boolean recoveryEnabled, boolean autoOpenLinks,
+                         boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge, String status,
+                         Set<String> frozenPackages, String[] onlineHostRules, int userId,
+                         boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
+                         boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
+                         String configFingerprint, int transitSeedColor, String transitAppearance,
+                         boolean transitCardEnabled, boolean openLinksInSmallWindow, String[] smallWindowPackages) {
             this.available = available;
             this.recoveryEnabled = recoveryEnabled;
             this.autoOpenLinks = autoOpenLinks;
@@ -221,6 +315,9 @@ public final class SystemServerConfigContract {
             this.configFingerprint = configFingerprint;
             this.transitSeedColor = transitSeedColor;
             this.transitAppearance = transitAppearance;
+            this.transitCardEnabled = transitCardEnabled;
+            this.openLinksInSmallWindow = openLinksInSmallWindow;
+            this.smallWindowPackages = SystemRuntimeConfig.normalizeSmallWindowPackages(smallWindowPackages);
         }
 
         public SystemRuntimeConfig.State toRuntimeState(long savedAtEpochMillis) throws java.io.IOException {
@@ -229,7 +326,8 @@ public final class SystemServerConfigContract {
                     autonomousEnabled, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
                     paymentSdkBridge, onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineHostRules,
                     new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0),
-                    transitSeedColor, transitAppearance);
+                    transitSeedColor, transitAppearance, transitCardEnabled, openLinksInSmallWindow,
+                    smallWindowPackages.toArray(new String[0]));
         }
 
         private static Snapshot available(boolean recoveryEnabled, boolean autoOpenLinks,
@@ -237,7 +335,9 @@ public final class SystemServerConfigContract {
                                           String[] frozenPackages, String[] onlineHostRules, int userId,
                                           boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
                                           boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
-                                          String configFingerprint, int transitSeedColor, String transitAppearance) {
+                                          String configFingerprint, int transitSeedColor, String transitAppearance,
+                                          boolean transitCardEnabled, boolean openLinksInSmallWindow,
+                                          String[] smallWindowPackages) {
             Set<String> values = new LinkedHashSet<>();
             if (frozenPackages != null) {
                 values.addAll(Arrays.asList(frozenPackages));
@@ -247,7 +347,7 @@ public final class SystemServerConfigContract {
             return new Snapshot(true, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
                     paymentSdkBridge, STATUS_OK, Collections.unmodifiableSet(values), onlineHostRules, userId,
                     autonomousEnabled, onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint,
-                    transitSeedColor, transitAppearance);
+                    transitSeedColor, transitAppearance, transitCardEnabled, openLinksInSmallWindow, smallWindowPackages);
         }
 
         private static Snapshot unavailable(String status) {

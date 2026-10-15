@@ -90,11 +90,18 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
     var clip by remember { mutableStateOf(p.getBoolean(KEY_CLIPBOARD, false)) }
     var debug by remember { mutableStateOf(p.getBoolean(KEY_DEBUG, false)) }
     var autonomous by remember { mutableStateOf(p.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false)) }
+    var transitCard by remember { mutableStateOf(p.getBoolean(SystemServerConfigContract.KEY_TRANSIT_CARD_ENABLED, false)) }
+    var smallWindow by remember { mutableStateOf(p.getBoolean(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW, false)) }
+    var smallWindowPackages by remember { mutableStateOf(p.getStringSet(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, emptySet()).orEmpty().toSet()) }
+    var showSmallWindowApps by remember { mutableStateOf(false) }
     val runtimeStatus = remember { a.getSharedPreferences(SystemServerConfigContract.RUNTIME_STATUS_PREFS, Context.MODE_PRIVATE) }
     var statusRevision by remember { mutableStateOf(0) }
     DisposableEffect(a, p, runtimeStatus) {
         val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
             autonomous = p.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false)
+            transitCard = p.getBoolean(SystemServerConfigContract.KEY_TRANSIT_CARD_ENABLED, false)
+            smallWindow = p.getBoolean(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW, false)
+            smallWindowPackages = p.getStringSet(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, emptySet()).orEmpty().toSet()
             statusRevision++
         }
         val lifecycleListener = LifecycleEventObserver { _, event ->
@@ -130,11 +137,14 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
                 .takeUnless { it.isNullOrBlank() } ?: "等待系统保存并确认当前配置，请暂时保持 IceBridge 解冻。"
         }
     }
-    fun setv(k: String, v: Boolean) {
+    fun markConfigPending() {
         runtimeStatus.edit().putBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false)
             .putBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, false)
             .putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, "")
             .putString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, "配置已变化，等待系统重新确认").apply()
+    }
+    fun setv(k: String, v: Boolean) {
+        markConfigPending()
         a.setPref(k, v); saveConfig(k, v); SystemServerConfigContract.notifyChanged(a)
     }
     fun prereq() { if (!bridge) { bridge = true; setv(KEY_AUTO_BRIDGE, true) }; if (!auto) { auto = true; setv(KEY_AUTO_OPEN, true) } }
@@ -164,6 +174,11 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
             SuperSwitch(title="剪贴板链接自动打开", summary="复制支持的链接后自动处理", checked=clip, onCheckedChange={ clip=it; setv(KEY_CLIPBOARD,it); ClipboardLinkService.update(a) })
         }
         SectionTitle("跳转行为"); Card(Modifier.fillMaxWidth()) {
+            SuperSwitch(title="显示中转卡片", summary="独立运行时显示应用图标与流线；关闭不影响解冻和跳转", checked=transitCard,
+                onCheckedChange={ transitCard=it; setv(SystemServerConfigContract.KEY_TRANSIT_CARD_ENABLED,it) })
+            SuperSwitch(title="小窗打开", summary="独立运行时，仅对下方选中的链接目标请求系统小窗", checked=smallWindow,
+                onCheckedChange={ smallWindow=it; setv(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW,it) })
+            SuperArrow(title="小窗应用", summary=if(smallWindowPackages.isEmpty()) "未选择应用时不使用小窗" else "已选择 ${smallWindowPackages.size} 个应用", onClick={ showSmallWindowApps=true })
             SuperSwitch(title="仅处理被冻结的应用", summary="推荐开启，避免干预正常运行的应用", checked=frozen, onCheckedChange={ frozen=it; setv(KEY_ONLY_FROZEN,it) })
             SuperSwitch(title="不在最近任务中显示 IceBridge", summary="隐藏临时桥接页与 IceBridge 任务", checked=recents, onCheckedChange={ recents=it; a.setPref(KEY_HIDE_RECENTS,it); RecentTaskVisibility.apply(a,it) })
             SuperSwitch(title="跳转失败时回退浏览器", summary="目标应用无法打开时继续打开原网页", checked=fallback, onCheckedChange={ fallback=it; setv(KEY_BROWSER_FALLBACK,it) })
@@ -175,6 +190,13 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
             SuperArrow(title="推荐作用域", summary="LSPosed 中仅勾选 system；不要勾选微信、QQ、IceBox 或目标应用", onClick={ })
         }
     } }
+    if (showSmallWindowApps) SmallWindowAppsDialog(a, smallWindowPackages, onSave={ selected ->
+        markConfigPending()
+        smallWindowPackages = selected.toSet()
+        p.edit().putStringSet(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, selected.toSet()).apply()
+        SystemServerConfigContract.notifyChanged(a)
+        showSmallWindowApps = false
+    }, onDismiss={ showSmallWindowApps=false })
 }
 
 @Composable private fun PermissionStatus(a: PermissionActivity) {

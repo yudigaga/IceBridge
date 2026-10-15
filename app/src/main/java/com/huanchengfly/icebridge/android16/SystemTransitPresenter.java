@@ -28,6 +28,7 @@ import com.huanchengfly.icebridge.BuildConfig;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** A non-interactive native status card owned entirely by system_server. */
 public final class SystemTransitPresenter {
@@ -53,6 +54,9 @@ public final class SystemTransitPresenter {
     private final Clock clock;
     private final ListenerRegistration registration;
     private final TransitSessionPolicy sessions = new TransitSessionPolicy();
+    private final Object settingLock = new Object();
+    private final AtomicLong suppressedThroughId = new AtomicLong();
+    private volatile VisibilitySetting visibility = new VisibilitySetting(false);
     private boolean listening;
     // The framework retains this receiver for the system_server lifetime.
     private BroadcastReceiver systemEvents;
@@ -112,43 +116,88 @@ public final class SystemTransitPresenter {
         onStage(id, userId, null, targetPackage, stage, seed, appearance);
     }
 
+    /** The durable runtime setting opts in; changing it never waits for the window thread. */
+    public void setEnabled(boolean enabled) {
+        synchronized (settingLock) {
+            if (visibility.enabled == enabled) return;
+            visibility = new VisibilitySetting(enabled);
+            if (!enabled) cancelAll("card-disabled");
+        }
+    }
+
     public void onStage(long id, int userId, String sourcePackage, String targetPackage,
                         Stage stage, int seed, String appearance) {
         if (stage == null) return;
-        post(() -> {
-            boolean newSession = sessions.active() == null || sessions.active().id != id;
-            if (!sessions.stage(id, userId, sourcePackage, targetPackage, stage == Stage.THAWING
-                    ? TransitSessionPolicy.THAWING : TransitSessionPolicy.OPENING,
-                    seed, appearance, clock.uptimeMillis())) return;
-            if (!listening) {
-                try {
-                    registration.register(this);
-                    listening = true;
-                } catch (Throwable error) {
-                    sessions.finish(id);
-                    dismiss("registration-unavailable:" + error.getClass().getSimpleName());
-                    return;
-                }
-            }
-            if (userId != 0 || !window.canShow()) {
-                sessions.finish(id);
-                dismiss("display-not-available");
+        synchronized (settingLock) {
+            VisibilitySetting requested = visibility;
+            if (!requested.enabled) {
+                suppress(id);
                 return;
             }
+            post(() -> showStage(id, userId, sourcePackage, targetPackage, stage, seed, appearance, requested));
+        }
+    }
+
+    private void showStage(long id, int userId, String sourcePackage, String targetPackage,
+                           Stage stage, int seed, String appearance, VisibilitySetting requested) {
+        // A disable/re-enable cycle also invalidates work already waiting in the UI queue.
+        if (visibility != requested || id <= suppressedThroughId.get()) {
+            suppress(id);
+            return;
+        }
+        boolean newSession = sessions.active() == null || sessions.active().id != id;
+        if (!sessions.stage(id, userId, sourcePackage, targetPackage, stage == Stage.THAWING
+                ? TransitSessionPolicy.THAWING : TransitSessionPolicy.OPENING,
+                seed, appearance, clock.uptimeMillis())) return;
+        if (!listening) {
             try {
-                window.show(sessions.active());
-                if (newSession) {
-                    log("transit shown: id=" + id + ", user=" + userId);
-                    long remaining = Math.max(0, sessions.active().deadline - clock.uptimeMillis());
-                    ui.postDelayed(() -> guarded(() -> {
-                        if (sessions.timeout(id, clock.uptimeMillis())) dismiss("timeout");
-                    }), remaining);
-                }
+                registration.register(this);
+                listening = true;
             } catch (Throwable error) {
                 sessions.finish(id);
-                dismiss("show-failed:" + error.getClass().getSimpleName());
+                dismiss("registration-unavailable:" + error.getClass().getSimpleName());
+                return;
             }
-        });
+        }
+        if (visibility != requested) {
+            suppress(id);
+            sessions.finish(id);
+            dismiss("card-disabled");
+            return;
+        }
+        if (userId != 0 || !window.canShow()) {
+            sessions.finish(id);
+            dismiss("display-not-available");
+            return;
+        }
+        if (visibility != requested) {
+            suppress(id);
+            sessions.finish(id);
+            dismiss("card-disabled");
+            return;
+        }
+        try {
+            window.show(sessions.active());
+            if (newSession) {
+                log("transit shown: id=" + id + ", user=" + userId);
+                long remaining = Math.max(0, sessions.active().deadline - clock.uptimeMillis());
+                ui.postDelayed(() -> guarded(() -> {
+                    if (sessions.timeout(id, clock.uptimeMillis())) dismiss("timeout");
+                }), remaining);
+            }
+        } catch (Throwable error) {
+            sessions.finish(id);
+            dismiss("show-failed:" + error.getClass().getSimpleName());
+        }
+    }
+
+    private void suppress(long id) {
+        if (id > 0) suppressedThroughId.accumulateAndGet(id, Math::max);
+    }
+
+    private static final class VisibilitySetting {
+        final boolean enabled;
+        VisibilitySetting(boolean enabled) { this.enabled = enabled; }
     }
 
     /** A framework launch request can return before the target has drawn its first window. */
@@ -236,9 +285,11 @@ public final class SystemTransitPresenter {
         IBinder token = activity.getWindow().getDecorView().getWindowToken();
         if (token == null) throw new IllegalStateException("preview Activity window not attached");
         Handler handler = new Handler(activity.getMainLooper());
-        return new SystemTransitPresenter(dispatcher(handler),
+        SystemTransitPresenter presenter = new SystemTransitPresenter(dispatcher(handler),
                 new NativeWindowHost(activity, token),
                 logger, SystemClock::uptimeMillis);
+        presenter.setEnabled(true);
+        return presenter;
     }
 
     View previewCard() {
