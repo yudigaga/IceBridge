@@ -27,6 +27,27 @@ public class SystemTransitPresenterTest {
         assertNull(fixture.host.session);
     }
 
+    @Test public void targetVisibilityOnWindowThreadClosesWithoutAnotherQueueTurn() {
+        Fixture fixture = new Fixture();
+        fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        fixture.ui.currentThread = true;
+        fixture.presenter.onTargetDrawn(1, 0, TARGET);
+        assertNull("A confirmed target surface must close the card in the current UI turn",
+                fixture.host.session);
+    }
+
+    @Test public void homeCancellationDoesNotOvertakeAndReviveAnAlreadyQueuedStage() {
+        Fixture fixture = new Fixture();
+        fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.currentThread = true;
+        fixture.presenter.cancelAll("homekey");
+        fixture.ui.currentThread = false;
+        fixture.ui.runReady();
+        assertNull("Home must cancel a stage that was already queued before its callback",
+                fixture.host.session);
+    }
+
     @Test public void oldTimeoutAndDrawCannotRemoveNewerCard() {
         Fixture fixture = new Fixture();
         fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
@@ -169,9 +190,11 @@ public class SystemTransitPresenterTest {
 
     private static final class FakeDispatcher implements SystemTransitPresenter.Dispatcher {
         long now;
+        boolean currentThread;
         final List<Task> pending = new ArrayList<>();
         @Override public void post(Runnable task) { pending.add(new Task(now, task)); }
         @Override public void postDelayed(Runnable task, long delay) { pending.add(new Task(now + delay, task)); }
+        @Override public boolean isCurrentThread() { return currentThread; }
         void runReady() {
             for (int index = 0; index < pending.size();) {
                 Task task = pending.get(index);

@@ -45,6 +45,7 @@ import com.huanchengfly.icebridge.android16.SystemLaunchPreflight;
 import com.huanchengfly.icebridge.android16.ActivityStarterTakeoverPolicy;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 import com.huanchengfly.icebridge.automation.AutonomousBridgeCoordinator;
+import com.huanchengfly.icebridge.automation.ConfigurationRefreshRetryPolicy;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -66,7 +67,6 @@ public final class IceBridgeModule extends XposedModule {
     private static final String TAG = "IceBridge";
     private static final String CHROME_PACKAGE = "com.android.chrome";
     private static final long CONFIG_RETRY_INTERVAL_MILLIS = 30_000L;
-    private static final long FROZEN_CACHE_REFRESH_MILLIS = 60_000L;
     private static final long RECOVERY_DEDUPLICATION_MILLIS = 4_000L;
     private static final long CLIPBOARD_EVENT_DEDUPLICATION_MILLIS = 250L;
     private static final long NATIVE_BRIDGE_DEDUPLICATION_MILLIS = 1_500L;
@@ -127,6 +127,7 @@ public final class IceBridgeModule extends XposedModule {
     private volatile Field activityStarterRequestField;
     private volatile Field activityStarterIntentField;
     private volatile TakeoverHook takeoverHook;
+    private final ConfigurationRefreshRetryPolicy configurationRefreshRetry = new ConfigurationRefreshRetryPolicy();
     private final ThreadLocal<TakeoverInvocation> activeTakeover = new ThreadLocal<>();
     private final ConcurrentHashMap<String, Long> pendingRecoveries = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> replayTokens = new ConcurrentHashMap<>();
@@ -185,11 +186,26 @@ public final class IceBridgeModule extends XposedModule {
         try {
             Class<?> recordClass = loader.loadClass("com.android.server.wm.ActivityRecord");
             Method drawn = SystemTargetWindowObserver.zeroArg(recordClass, "onWindowsDrawn");
-            if (drawn == null) { log(5, TAG, "transit UI unavailable: target draw callback not found"); return; }
-            hook(drawn).setId("icebridge:transit-target-drawn")
+            if (drawn != null) hook(drawn).setId("icebridge:transit-target-drawn")
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain -> {
                         Object result = chain.proceed();
                         postTargetWindow(chain.getThisObject(), false);
+                        return result;
+                    });
+            // The final Activity draw can be seconds after the target splash is already visible.
+            // Only successful WindowState show callbacks establish the earlier presentation edge.
+            Class<?> windowClass = loader.loadClass("com.android.server.wm.WindowState");
+            Method shown = SystemTargetWindowObserver.zeroArg(windowClass, "performShowLocked");
+            if (shown == null || shown.getReturnType() != Boolean.TYPE
+                    || findField(windowClass, "mAttrs") == null
+                    || findField(windowClass, "mActivityRecord") == null
+                    || findField(windowClass, "mHidden") == null) {
+                throw new NoSuchMethodException("target-window-show-metadata");
+            }
+            hook(shown).setId("icebridge:transit-target-shown")
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (Boolean.TRUE.equals(result)) postShownTargetWindow(chain.getThisObject());
                         return result;
                     });
             targetWindowObservationReady = true;
@@ -219,9 +235,23 @@ public final class IceBridgeModule extends XposedModule {
                             return result;
                         });
             }
-            log(4, TAG, "transit target window hooks installed");
+            log(4, TAG, "transit target window hooks installed: starting/app surface show");
         } catch (Throwable error) {
             log(5, TAG, "transit target window hook limited: " + error.getClass().getSimpleName());
+        } finally {
+            SystemAutonomousRuntime runtime = autonomousRuntime;
+            if (runtime != null) runtime.setWindowObservationReady(targetWindowObservationReady);
+        }
+    }
+
+    private void postShownTargetWindow(Object window) {
+        try {
+            SystemAutonomousRuntime runtime = autonomousRuntime;
+            if (runtime != null && runtime.observesTargetWindows()) {
+                runtime.onTargetWindow(targetWindows.readShownWindow(window));
+            }
+        } catch (Throwable ignored) {
+            // Snapshot fields only under WMS locks; UI work stays on its own handler.
         }
     }
 
@@ -1393,15 +1423,23 @@ public final class IceBridgeModule extends XposedModule {
         worker.postDelayed(new Runnable() {
             @Override
             public void run() {
-                registerConfigurationObserver();
-                RecoveryConfiguration configuration = refreshRecoveryConfiguration("frozen-cache", true);
-                SystemAutonomousRuntime runtime = autonomousRuntime;
-                if (runtime != null) runtime.tick();
-                log(4, TAG, "frozen package cache: status=" + configuration.status
-                        + ", packages=" + configuration.frozenPackages.size());
-                Handler currentWorker = systemHandler;
-                if (currentWorker != null) {
-                    currentWorker.postDelayed(this, FROZEN_CACHE_REFRESH_MILLIS);
+                boolean healthy = false;
+                try {
+                    registerConfigurationObserver();
+                    RecoveryConfiguration configuration = refreshRecoveryConfiguration("frozen-cache", true);
+                    SystemAutonomousRuntime runtime = autonomousRuntime;
+                    if (runtime != null) runtime.tick();
+                    healthy = configurationObserver != null && configuration.available
+                            && recoveryConfigurationFailureCount == 0;
+                    log(4, TAG, "frozen package cache: status=" + configuration.status
+                            + ", packages=" + configuration.frozenPackages.size());
+                } catch (Throwable error) {
+                    takeoverLog(5, "configuration refresh unavailable: " + failureLocation(error));
+                } finally {
+                    Handler currentWorker = systemHandler;
+                    if (currentWorker != null) {
+                        currentWorker.postDelayed(this, configurationRefreshRetry.nextDelayMillis(healthy));
+                    }
                 }
             }
         }, delayMillis);
@@ -1428,8 +1466,17 @@ public final class IceBridgeModule extends XposedModule {
             configurationObserver = observer;
             log(4, TAG, "configuration observer registered");
         } catch (Throwable error) {
-            log(5, TAG, "configuration observer unavailable: " + error.getClass().getSimpleName());
+            takeoverLog(5, "configuration observer unavailable: " + failureLocation(error));
         }
+    }
+
+    /** Include a useful failure location without exposing exception messages or Intent payloads. */
+    private static String failureLocation(Throwable error) {
+        StackTraceElement[] frames = error.getStackTrace();
+        if (frames.length == 0) return error.getClass().getSimpleName();
+        StackTraceElement first = frames[0];
+        return error.getClass().getSimpleName() + "@" + first.getClassName()
+                + "." + first.getMethodName() + ":" + first.getLineNumber();
     }
 
     private void scheduleNativeActivityLinkCapture(Intent original, int userId) {
@@ -1769,6 +1816,7 @@ public final class IceBridgeModule extends XposedModule {
                     parsed.frozenPackages, parsed.onlineHostRules, parsed.userId)
                     : RecoveryConfiguration.unavailable(parsed.status);
         } catch (Throwable error) {
+            takeoverLog(5, "configuration provider unavailable: " + failureLocation(error));
             return RecoveryConfiguration.unavailable("provider-call-" + error.getClass().getSimpleName());
         }
     }

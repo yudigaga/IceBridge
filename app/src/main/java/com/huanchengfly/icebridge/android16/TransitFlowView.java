@@ -8,8 +8,6 @@ import android.graphics.Path;
 import android.graphics.PathMeasure;
 import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
-import android.text.TextPaint;
-import android.text.TextUtils;
 import android.view.View;
 import android.view.animation.LinearInterpolator;
 
@@ -20,11 +18,8 @@ final class TransitFlowView extends View {
     private final Paint glow = stroke(8);
     private final Paint stream = stroke(2.8f);
     private final Paint head = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint arrow = stroke(1.8f);
-    private final TextPaint labels = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final Path route = new Path();
     private final Path fragment = new Path();
-    private final Path arrowShape = new Path();
     private final Path sourceClip = new Path();
     private final Path targetClip = new Path();
     private final RectF sourceBounds = new RectF();
@@ -37,10 +32,7 @@ final class TransitFlowView extends View {
     private Drawable targetIcon;
     private String sourceName = "发起应用";
     private String targetName = "目标应用";
-    private CharSequence shownSource = sourceName;
-    private CharSequence shownTarget = targetName;
     private float routeLength;
-    private float labelBaseline;
     private float sourceCenter;
     private float targetCenter;
     private float phase = 0.2f;
@@ -49,8 +41,6 @@ final class TransitFlowView extends View {
     TransitFlowView(Context context) {
         super(context);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
-        labels.setTextSize(12 * getResources().getDisplayMetrics().scaledDensity);
-        labels.setTextAlign(Paint.Align.CENTER);
         // Butt joins avoid round-cap overlaps turning the moving line into a string of beads.
         stream.setStrokeCap(Paint.Cap.BUTT);
         animator = ValueAnimator.ofFloat(0, 1);
@@ -75,10 +65,7 @@ final class TransitFlowView extends View {
         glow.setColor(palette.accent);
         stream.setColor(palette.accent);
         head.setColor(palette.accent);
-        arrow.setColor(palette.accent);
-        labels.setColor(palette.secondary);
         setContentDescription(sourceName + " → " + targetName);
-        fitLabels();
         if (differentRoute && animator.isStarted()) {
             animator.cancel();
             phase = 0.2f;
@@ -88,17 +75,16 @@ final class TransitFlowView extends View {
     }
 
     @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        int height = (int) Math.ceil(dp(101) + labels.getFontMetrics().descent + dp(7));
-        setMeasuredDimension(resolveSize((int) dp(276), widthMeasureSpec),
-                resolveSize(height, heightMeasureSpec));
+        setMeasuredDimension(resolveSize(Math.round(dp(184)), widthMeasureSpec),
+                resolveSize(Math.round(dp(80)), heightMeasureSpec));
     }
 
     @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
         super.onSizeChanged(width, height, oldWidth, oldHeight);
-        float radius = Math.min(dp(31), Math.max(dp(14), width / 5.5f));
+        float radius = Math.min(dp(24), Math.max(dp(14), width / 6f));
         sourceCenter = Math.max(radius + dp(2), width * 0.16f);
         targetCenter = width - sourceCenter;
-        float y = dp(43);
+        float y = height * 0.5f;
         float k = 0.55228475f;
         route.rewind();
         route.moveTo(sourceCenter + radius, y);
@@ -111,12 +97,8 @@ final class TransitFlowView extends View {
                 sourceCenter - k * radius, y - radius, sourceCenter, y - radius);
         route.cubicTo(sourceCenter + k * radius, y - radius,
                 sourceCenter + radius, y - k * radius, sourceCenter + radius, y);
-        measure.setPath(route, false);
-        float sourceLength = measure.getLength();
-        route.cubicTo(sourceCenter + radius, y + dp(22),
-                targetCenter - radius, y - dp(22), targetCenter - radius, y);
-        measure.setPath(route, false);
-        float arrowDistance = (sourceLength + measure.getLength()) * 0.5f;
+        route.cubicTo(sourceCenter + radius, y + dp(17),
+                targetCenter - radius, y - dp(17), targetCenter - radius, y);
         // The same contour continues around the destination, without jumping across the card.
         route.cubicTo(targetCenter - radius, y + k * radius,
                 targetCenter - k * radius, y + radius, targetCenter, y + radius);
@@ -128,42 +110,24 @@ final class TransitFlowView extends View {
                 targetCenter - radius, y - k * radius, targetCenter - radius, y);
         measure.setPath(route, false);
         routeLength = measure.getLength();
-        measure.getPosTan(arrowDistance, point, tangent);
-        float size = dp(5);
-        float tx = tangent[0], ty = tangent[1];
-        arrowShape.rewind();
-        arrowShape.moveTo(point[0] - tx * size - ty * size, point[1] - ty * size + tx * size);
-        arrowShape.lineTo(point[0] + tx * size, point[1] + ty * size);
-        arrowShape.lineTo(point[0] - tx * size + ty * size, point[1] - ty * size - tx * size);
-        float iconRadius = Math.max(dp(10), radius - dp(7));
+        float iconRadius = Math.max(dp(10), radius - dp(6));
         sourceBounds.set(sourceCenter - iconRadius, y - iconRadius,
                 sourceCenter + iconRadius, y + iconRadius);
         targetBounds.set(targetCenter - iconRadius, y - iconRadius,
                 targetCenter + iconRadius, y + iconRadius);
         sourceClip.rewind();
         targetClip.rewind();
-        sourceClip.addRoundRect(sourceBounds, dp(12), dp(12), Path.Direction.CW);
-        targetClip.addRoundRect(targetBounds, dp(12), dp(12), Path.Direction.CW);
-        labelBaseline = dp(99);
-        fitLabels();
-    }
-
-    private void fitLabels() {
-        float available = Math.max(0, getWidth() * 0.31f);
-        shownSource = TextUtils.ellipsize(sourceName, labels, available, TextUtils.TruncateAt.END);
-        shownTarget = TextUtils.ellipsize(targetName, labels, available, TextUtils.TruncateAt.END);
+        sourceClip.addRoundRect(sourceBounds, dp(10), dp(10), Path.Direction.CW);
+        targetClip.addRoundRect(targetBounds, dp(10), dp(10), Path.Direction.CW);
     }
 
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         frameCount++;
         canvas.drawPath(route, track);
-        canvas.drawPath(arrowShape, arrow);
         if (routeLength > 0) drawStream(canvas);
         drawIcon(canvas, sourceIcon, sourceBounds, sourceClip);
         drawIcon(canvas, targetIcon, targetBounds, targetClip);
-        canvas.drawText(shownSource, 0, shownSource.length(), sourceCenter, labelBaseline, labels);
-        canvas.drawText(shownTarget, 0, shownTarget.length(), targetCenter, labelBaseline, labels);
     }
 
     private void drawStream(Canvas canvas) {

@@ -2,16 +2,14 @@ package com.huanchengfly.icebridge.android16;
 
 import android.app.Activity;
 import android.os.Bundle;
-import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
-import android.widget.TextView;
 
 /** Non-exported debug visual fixture; the production presenter still requires system UID. */
 public final class TransitPreviewActivity extends Activity {
     private SystemTransitPresenter presenter;
-    private TextView background;
+    private View background;
     private int backgroundClicks;
     private Runnable backgroundDownCallback;
     private Runnable backgroundClickCallback;
@@ -25,11 +23,7 @@ public final class TransitPreviewActivity extends Activity {
         sourcePackage = previewPackage("preview_source", sourcePackage);
         targetPackage = previewPackage("preview_target", targetPackage);
         root.setBackgroundColor(dark ? 0xff11131a : 0xffeef1f8);
-        background = new TextView(this);
-        background.setText("IceBridge");
-        background.setTextSize(22);
-        background.setTextColor(dark ? 0xffd5d9e4 : 0xff555e70);
-        background.setGravity(Gravity.CENTER);
+        background = new View(this);
         background.setFocusableInTouchMode(true);
         background.setOnTouchListener((view, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN && backgroundDownCallback != null) {

@@ -10,7 +10,6 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
-import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.Binder;
@@ -20,12 +19,10 @@ import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.Process;
 import android.os.SystemClock;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
-import android.widget.TextView;
 
 import com.huanchengfly.icebridge.BuildConfig;
 
@@ -40,6 +37,7 @@ public final class SystemTransitPresenter {
     interface Dispatcher {
         void post(Runnable task);
         void postDelayed(Runnable task, long delayMillis);
+        default boolean isCurrentThread() { return false; }
     }
     interface WindowHost {
         boolean canShow();
@@ -159,7 +157,7 @@ public final class SystemTransitPresenter {
     public void onTargetDrawn(long id, int userId, String targetPackage) {
         post(() -> {
             if (sessions.targetDrawn(id, userId, targetPackage)) dismiss("target-drawn");
-        });
+        }, true);
     }
 
     public void finish(long id, String reason) {
@@ -195,7 +193,14 @@ public final class SystemTransitPresenter {
     }
 
     private void post(Runnable task) {
-        try { ui.post(() -> guarded(task)); }
+        post(task, false);
+    }
+
+    private void post(Runnable task, boolean immediateOnUiThread) {
+        try {
+            if (immediateOnUiThread && ui.isCurrentThread()) guarded(task);
+            else ui.post(() -> guarded(task));
+        }
         catch (Throwable error) { log("transit dispatch unavailable: " + error.getClass().getSimpleName()); }
     }
 
@@ -221,6 +226,7 @@ public final class SystemTransitPresenter {
         return new Dispatcher() {
             @Override public void post(Runnable task) { handler.post(task); }
             @Override public void postDelayed(Runnable task, long delayMillis) { handler.postDelayed(task, delayMillis); }
+            @Override public boolean isCurrentThread() { return handler.getLooper().isCurrentThread(); }
         };
     }
 
@@ -247,9 +253,6 @@ public final class SystemTransitPresenter {
         private Context windowContext;
         private WindowManager manager;
         private LinearLayout card;
-        private TextView title;
-        private TextView detail;
-        private TextView brand;
         private TransitFlowView flow;
         private boolean attached;
 
@@ -295,18 +298,12 @@ public final class SystemTransitPresenter {
                     & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES);
             TransitSessionPolicy.Palette palette = TransitSessionPolicy.Palette.fromSeed(session.seed, dark);
             if (card == null) createCard();
-            card.setBackground(shape(palette.card, 24, palette.outline));
-            title.setTextColor(palette.title);
-            detail.setTextColor(palette.secondary);
-            brand.setTextColor(palette.accent);
-            title.setText(session.stage == TransitSessionPolicy.THAWING ? "正在解冻" : "正在打开");
+            card.setBackground(shape(palette.card, 20, palette.outline));
             AppVisual source = application(session.sourcePackage, "发起应用");
             AppVisual target = application(session.targetPackage, "目标应用");
             flow.bind(source.icon, source.label, target.icon, target.label, palette);
-            detail.setText(session.stage == TransitSessionPolicy.THAWING
-                    ? "正在恢复应用可用状态" : "正在启动应用，等待画面显示");
-            card.setContentDescription("IceBridge，" + source.label + " → " + target.label
-                    + "，" + title.getText());
+            String stage = session.stage == TransitSessionPolicy.THAWING ? "正在解冻" : "正在打开";
+            card.setContentDescription(source.label + "，前往" + target.label + "，" + stage);
             if (!attached) {
                 WindowManager.LayoutParams params = parameters();
                 manager.addView(card, params);
@@ -316,7 +313,7 @@ public final class SystemTransitPresenter {
 
         private WindowManager.LayoutParams parameters() throws Exception {
             int available = windowContext.getResources().getDisplayMetrics().widthPixels - dp(48);
-            int width = Math.max(dp(200), Math.min(dp(320), available));
+            int width = Math.max(dp(160), Math.min(dp(208), available));
             WindowManager.LayoutParams params = new WindowManager.LayoutParams(width,
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     previewToken != null ? WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
@@ -340,36 +337,15 @@ public final class SystemTransitPresenter {
         private void createCard() {
             card = new LinearLayout(windowContext);
             card.setOrientation(LinearLayout.VERTICAL);
-            card.setPadding(dp(22), dp(20), dp(22), dp(20));
-            card.setElevation(dp(16));
+            card.setPadding(dp(12), dp(8), dp(12), dp(8));
+            card.setElevation(dp(12));
             card.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
             card.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-
-            LinearLayout header = new LinearLayout(windowContext);
-            header.setOrientation(LinearLayout.HORIZONTAL);
-            header.setGravity(Gravity.CENTER_VERTICAL);
-            title = text(18, true);
-            LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            header.addView(title, titleParams);
-            brand = text(11, true);
-            brand.setText("IceBridge");
-            header.addView(brand);
-            card.addView(header);
 
             flow = new TransitFlowView(windowContext);
             LinearLayout.LayoutParams flowParams = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            flowParams.topMargin = dp(10);
             card.addView(flow, flowParams);
-
-            detail = text(12, false);
-            detail.setGravity(Gravity.CENTER);
-            detail.setMaxLines(2);
-            LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            detailParams.topMargin = dp(6);
-            card.addView(detail, detailParams);
         }
 
         private AppVisual application(String packageName, String fallbackLabel) {
@@ -398,14 +374,6 @@ public final class SystemTransitPresenter {
             final String label;
             final Drawable icon;
             AppVisual(String label, Drawable icon) { this.label = label; this.icon = icon; }
-        }
-
-        private TextView text(int sp, boolean strong) {
-            TextView view = new TextView(windowContext);
-            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-            view.setFontFeatureSettings("kern");
-            if (strong) view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-            return view;
         }
 
         private GradientDrawable shape(int color, int radius, int stroke) {

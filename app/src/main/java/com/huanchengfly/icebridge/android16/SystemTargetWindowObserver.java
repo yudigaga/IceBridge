@@ -2,6 +2,7 @@ package com.huanchengfly.icebridge.android16;
 
 import android.content.Intent;
 import android.os.SystemClock;
+import android.view.WindowManager;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -21,9 +22,14 @@ public final class SystemTargetWindowObserver {
         public final String packageName;
         public final boolean systemPrompt;
         public final long observedAt;
+        public final String presentation;
         Event(long id, int userId, String packageName, boolean systemPrompt) {
+            this(id, userId, packageName, systemPrompt, "app-window");
+        }
+        Event(long id, int userId, String packageName, boolean systemPrompt, String presentation) {
             this.id = id; this.userId = userId; this.packageName = packageName; this.systemPrompt = systemPrompt;
             this.observedAt = SystemClock.elapsedRealtime();
+            this.presentation = presentation;
         }
     }
 
@@ -54,9 +60,9 @@ public final class SystemTargetWindowObserver {
         try {
             // onWindowsDrawn is itself the draw signal. AOSP assigns mReportedDrawn only after
             // this inner callback returns; only resume/new-intent probes may require that flag.
-            if (record == null || (requireVisible && !booleanMethod(record, "isReportedDrawn"))) return null;
-            if (requireVisible && (!booleanMethod(record, "isVisibleRequested")
-                    || !"RESUMED".equals(String.valueOf(invoke(record, "getState"))))) return null;
+            if (record == null || !booleanMethod(record, "isVisibleRequested")
+                    || (requireVisible && !booleanMethod(record, "isReportedDrawn"))) return null;
+            if (requireVisible && !"RESUMED".equals(String.valueOf(invoke(record, "getState")))) return null;
             Object pkg = field(record, "packageName");
             Object user = field(record, "mUserId");
             if (!(user instanceof Integer)) user = field(record, "userId");
@@ -80,6 +86,40 @@ public final class SystemTargetWindowObserver {
             return booleanMethod(record, "isVisibleRequested")
                     && "RESUMED".equals(String.valueOf(invoke(record, "getState")))
                     ? new Event(0, (Integer) user, name, false) : null;
+        } catch (Throwable ignored) { return null; }
+    }
+
+    /** Called only after WindowState.performShowLocked returns true for a shown window. */
+    public synchronized Event readShownWindow(Object window) {
+        try {
+            if (window == null || !Boolean.FALSE.equals(field(window, "mHidden"))) return null;
+            Object attrs = field(window, "mAttrs");
+            if (!(attrs instanceof WindowManager.LayoutParams)) return null;
+            int type = ((WindowManager.LayoutParams) attrs).type;
+            if (type != WindowManager.LayoutParams.TYPE_APPLICATION_STARTING
+                    && type != WindowManager.LayoutParams.TYPE_BASE_APPLICATION
+                    && type != WindowManager.LayoutParams.TYPE_APPLICATION) return null;
+            Object record = field(window, "mActivityRecord");
+            // performShowLocked(true) is the presentation signal, including a starting window
+            // before ActivityRecord reaches RESUMED or commits mReportedDrawn for its content.
+            if (record == null || !booleanMethod(record, "isVisibleRequested")) return null;
+            Object pkg = field(record, "packageName");
+            Object user = field(record, "mUserId");
+            if (!(user instanceof Integer)) user = field(record, "userId");
+            if (!(pkg instanceof String) || !(user instanceof Integer) || (Integer) user < 0) return null;
+            prune();
+            Delivery delivery = delivered.get(record);
+            Object raw = field(record, "intent");
+            long id = delivery == null ? idOf(raw instanceof Intent ? (Intent) raw : null) : delivery.id;
+            String name = (String) pkg;
+            boolean prompt = "com.android.permissioncontroller".equals(name)
+                    || "com.google.android.permissioncontroller".equals(name)
+                    || "com.lbe.security.miui".equals(name) || "com.android.packageinstaller".equals(name);
+            // Untagged app routers remain candidates; runtime correlation still checks package,
+            // user, operation phase and observation time before dismissing a progress session.
+            return new Event(prompt || id <= 0 ? 0 : id, (Integer) user, name, prompt,
+                    type == WindowManager.LayoutParams.TYPE_APPLICATION_STARTING
+                            ? "starting-window" : "app-window");
         } catch (Throwable ignored) { return null; }
     }
 

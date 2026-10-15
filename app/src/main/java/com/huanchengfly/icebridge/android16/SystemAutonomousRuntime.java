@@ -416,7 +416,7 @@ public final class SystemAutonomousRuntime {
                 event.id, event.userId, event.packageName, event.observedAt);
         if (trace == null || !trace.done.compareAndSet(false, true)) return;
         transit.onTargetDrawn(trace.id, event.userId, event.packageName);
-        traceLog(trace, "window-ready", event.observedAt);
+        traceLog(trace, "target-visible-" + event.presentation, event.observedAt);
     }
 
     private TransitTrace beginTrace(int user, String sourcePackage, SystemRuntimeConfig.State state,

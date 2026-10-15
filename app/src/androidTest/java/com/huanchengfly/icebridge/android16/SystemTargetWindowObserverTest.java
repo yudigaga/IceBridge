@@ -2,6 +2,7 @@ package com.huanchengfly.icebridge.android16;
 
 import android.content.Intent;
 import android.os.SystemClock;
+import android.view.WindowManager;
 
 import androidx.test.runner.AndroidJUnit4;
 
@@ -19,6 +20,7 @@ public class SystemTargetWindowObserverTest {
         SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
         Record record = new Record(TARGET, 0, tagged(41));
         record.mReportedDrawn = true;
+        record.mVisibleRequested = true;
         long before = SystemClock.elapsedRealtime();
         SystemTargetWindowObserver.Event event = observer.read(record, false);
         assertTarget(event, 41, 0, TARGET);
@@ -135,11 +137,109 @@ public class SystemTargetWindowObserverTest {
     @Test public void officialVisibilityUpdateCommitsDrawnFlagAfterItsInnerDrawCallback() {
         SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
         Record record = new Record(TARGET, 0, tagged(41));
+        record.mVisibleRequested = true;
         // AOSP calls onWindowsDrawn() before assigning mReportedDrawn in the outer update.
         // read(false) belongs only to that verified callback and must trust its draw event.
         assertTarget(observer.read(record, false), 41, 0, TARGET);
         record.mReportedDrawn = true;
         assertTarget(observer.read(record, false), 41, 0, TARGET);
+    }
+
+    @Test public void taggedDrawCallbackFromAnActivityRequestedHiddenCannotFinishTransit() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        Record record = visible(TARGET, 0, tagged(41));
+        record.mVisibleRequested = false;
+        // AOSP permits onWindowsDrawn after another Activity requested this one hidden.
+        assertNull(observer.read(record, false));
+    }
+
+    @Test public void shownStartingWindowEndsTransitBeforeActivityContentOrResume() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        Record record = starting(TARGET, 0, tagged(41));
+        assertFalse(record.mReportedDrawn);
+        assertEquals(ActivityState.INITIALIZING, record.state);
+        long before = SystemClock.elapsedRealtime();
+        SystemTargetWindowObserver.Event event = observer.readShownWindow(
+                new Window(record, WindowManager.LayoutParams.TYPE_APPLICATION_STARTING));
+        assertTarget(event, 41, 0, TARGET);
+        assertEquals("starting-window", event.presentation);
+        assertTrue(event.observedAt >= before);
+        assertTrue(event.observedAt <= SystemClock.elapsedRealtime());
+    }
+
+    @Test public void shownApplicationWindowsDoNotRequireTheFinalContentDrawFlag() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        for (int type : new int[]{WindowManager.LayoutParams.TYPE_BASE_APPLICATION,
+                WindowManager.LayoutParams.TYPE_APPLICATION}) {
+            Record record = starting(TARGET, 10, tagged(42));
+            SystemTargetWindowObserver.Event event = observer.readShownWindow(new Window(record, type));
+            assertTarget(event, 42, 10, TARGET);
+            assertEquals("app-window", event.presentation);
+        }
+    }
+
+    @Test public void untaggedShownStartingWindowRemainsACandidateForRuntimeCorrelation() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        Record record = starting(TARGET, 0, new Intent(Intent.ACTION_VIEW));
+        SystemTargetWindowObserver.Event event = observer.readShownWindow(
+                new Window(record, WindowManager.LayoutParams.TYPE_APPLICATION_STARTING));
+        assertTarget(event, 0, 0, TARGET);
+        assertEquals("starting-window", event.presentation);
+        // The zero-token event cannot directly finish an unrelated progress session.
+        TransitSessionPolicy sessions = new TransitSessionPolicy();
+        assertTrue(sessions.stage(41, 0, "com.example.other", TransitSessionPolicy.OPENING,
+                0xff7e57c2, "light", 0));
+        assertFalse(sessions.targetDrawn(event.id, event.userId, event.packageName));
+        assertNotNull(sessions.active());
+    }
+
+    @Test public void aTransitTagCannotMakeAHiddenWindowCountAsPresented() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        Window window = new Window(starting(TARGET, 0, tagged(41)),
+                WindowManager.LayoutParams.TYPE_APPLICATION_STARTING);
+        window.mHidden = true;
+        assertNull(observer.readShownWindow(window));
+    }
+
+    @Test public void aTransitTagCannotMakeABackgroundActivityCountAsPresented() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        Record record = starting(TARGET, 0, tagged(41));
+        record.mVisibleRequested = false;
+        assertNull(observer.readShownWindow(new Window(record,
+                WindowManager.LayoutParams.TYPE_APPLICATION_STARTING)));
+    }
+
+    @Test public void nonApplicationOrChildWindowsCannotFinishATargetTransit() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        for (int type : new int[]{WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,
+                WindowManager.LayoutParams.TYPE_TOAST}) {
+            assertNull(observer.readShownWindow(new Window(starting(TARGET, 0, tagged(41)), type)));
+        }
+    }
+
+    @Test public void windowsWithoutActivityOrLayoutMetadataFailClosed() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        assertNull(observer.readShownWindow(null));
+        assertNull(observer.readShownWindow(new Object()));
+        assertNull(observer.readShownWindow(new Window(null,
+                WindowManager.LayoutParams.TYPE_APPLICATION_STARTING)));
+        Window window = new Window(starting(TARGET, 0, tagged(41)),
+                WindowManager.LayoutParams.TYPE_APPLICATION_STARTING);
+        window.mAttrs = null;
+        assertNull(observer.readShownWindow(window));
+    }
+
+    @Test public void shownWindowKeepsTheLatestDeliveredTokenAndUser() {
+        SystemTargetWindowObserver observer = new SystemTargetWindowObserver();
+        Record record = starting(TARGET, 10, tagged(41));
+        observer.onNewIntent(record, tagged(42));
+        assertTarget(observer.readShownWindow(new Window(record,
+                WindowManager.LayoutParams.TYPE_APPLICATION)), 42, 10, TARGET);
+        observer.onNewIntent(record, new Intent(Intent.ACTION_VIEW));
+        assertTarget(observer.readShownWindow(new Window(record,
+                WindowManager.LayoutParams.TYPE_APPLICATION)), 0, 10, TARGET);
     }
 
     private static Intent tagged(long id) {
@@ -155,6 +255,12 @@ public class SystemTargetWindowObserverTest {
         return record;
     }
 
+    private static Record starting(String pkg, int user, Intent intent) {
+        Record record = new Record(pkg, user, intent);
+        record.mVisibleRequested = true;
+        return record;
+    }
+
     private static void assertTarget(SystemTargetWindowObserver.Event event, long id,
                                      int user, String pkg) {
         assertNotNull(event);
@@ -165,6 +271,19 @@ public class SystemTargetWindowObserverTest {
     }
 
     private enum ActivityState { INITIALIZING, RESUMED, STOPPED }
+
+    /** AOSP performShowLocked(true) has already cleared mHidden for these window types. */
+    private static final class Window {
+        final Record mActivityRecord;
+        WindowManager.LayoutParams mAttrs;
+        boolean mHidden;
+
+        Window(Record record, int type) {
+            mActivityRecord = record;
+            mAttrs = new WindowManager.LayoutParams();
+            mAttrs.type = type;
+        }
+    }
 
     /** Names match com.android.server.wm.ActivityRecord in AOSP Android 16. */
     private static final class Record {

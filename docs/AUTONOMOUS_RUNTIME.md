@@ -2,7 +2,7 @@
 
 0.0.82 增加可选的系统独立运行模式。IceBridge 被 IceBox 禁用或隐藏后，已注入 `system_server` 的模块使用系统保存的配置处理链接、剪贴板、支付预解冻和在线规则更新，整个处理过程不需要解冻或启动 IceBridge 本体。
 
-推荐使用 0.0.85 或更新版本。0.0.83 修复普通微信／QQ 跳转的来源令牌误判；0.0.84 增加系统侧居中中转进度卡片，0.0.85 改为来源图标经流线箭头指向目标图标，沿用同步主题并等待目标窗口出现后收起。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)和[卡片及计时](TRANSIT_PROGRESS.md)说明了具体行为。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
+推荐使用 0.0.86 或更新版本。0.0.83 修复普通微信／QQ 跳转的来源令牌误判；0.0.85 接管原始 WebView 点击；0.0.86 缩小卡片，仅保留图标和流线，并在目标启动画面／应用窗口展示时收起，不再等待内容加载。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)和[卡片及计时](TRANSIT_PROGRESS.md)说明了具体行为。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
 
 当前只接收用户 0 的配置。工作资料和其他用户不会继承该配置；目标被挂起（suspended）、卸载或状态无法确认时不解冻。实际 ROM 的系统接口、SELinux 和冻结后重启注入仍需单独验收。
 
@@ -60,9 +60,9 @@
 ```powershell
 ./tools/autonomous-fixture/build.ps1 -SdkRoot $env:ANDROID_HOME -JdkRoot $env:JAVA_HOME
 adb -s emulator-5556 root
-adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.85-debug.apk
+adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.86-debug.apk
 adb -s emulator-5556 install -r tools/autonomous-fixture/build/icebridge-autonomous-fixture.apk
-adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.85-debug.apk /data/local/tmp/icebridge-autonomous.apk
+adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.86-debug.apk /data/local/tmp/icebridge-autonomous.apk
 adb -s emulator-5556 shell 'su 1000 sh -c "CLASSPATH=/data/local/tmp/icebridge-autonomous.apk app_process /system/bin com.huanchengfly.icebridge.android16.AutonomousRuntimeHarness save"'
 adb -s emulator-5556 shell pm disable-user --user 0 io.github.yudigaga.icebridge
 adb -s emulator-5556 shell pm hide --user 0 io.github.yudigaga.icebridge

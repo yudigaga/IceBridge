@@ -23,7 +23,7 @@ In **Bridge and automation**, enable **Run independently after freezing IceBridg
 
 Use 0.0.83 or later: it fixes ordinary WeChat/QQ Activity starts being mistaken for result requests. After upgrading, restart the device to load the new system module; see the [diagnosis and regression](docs/FROZEN_CAPTURE_DIAGNOSIS.md).
 
-Version 0.0.85 shows the source and destination app icons in the centered native progress card, with a moving stream following the directed route. The card works while IceBridge is frozen, follows the synchronized theme, shows thawing/opening, and closes on the target window becoming ready. It adds no fixed launch delay; [progress and timing](docs/TRANSIT_PROGRESS.md) distinguishes module work from target-app cold starts.
+Version 0.0.86 uses a compact centered card containing only the source/destination icons and a moving stream. It has no visible text or arrow, follows the synchronized day/night theme, and closes when the target's splash or app window is shown. It adds no fixed launch delay; [progress and timing](docs/TRANSIT_PROGRESS.md) distinguishes target presentation from content loading.
 
 For supported ordinary WeChat/QQ clicks, independent mode now takes over the original WebView launch after checking the route, so it opens only the target. If takeover fails, it attempts the original source request once. Payments, result requests and unsupported cases preserve their original flow.
 

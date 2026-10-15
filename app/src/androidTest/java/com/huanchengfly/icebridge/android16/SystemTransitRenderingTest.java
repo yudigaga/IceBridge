@@ -28,12 +28,33 @@ import static org.junit.Assert.*;
 /** Uses an application token to verify the same native card without asking for overlay permission. */
 @RunWith(AndroidJUnit4.class)
 public class SystemTransitRenderingTest {
+    @Test public void compactCardContainsOnlyTheAppFlowAndNoVisibleText() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        TransitPreviewActivity activity = open(instrumentation, false);
+        try {
+            assertCompactCard(instrumentation, activity, "正在解冻");
+            awaitFocusedAndLaidOut(instrumentation, activity);
+            instrumentation.runOnMainSync(() -> {
+                ViewGroup card = (ViewGroup) activity.card();
+                float density = activity.getResources().getDisplayMetrics().density;
+                assertEquals("The card should be 208 dp wide", 208, card.getWidth() / density, 1);
+                assertEquals("The card should be 96 dp high", 96, card.getHeight() / density, 1);
+                assertEquals("Only the icon and motion drawing surface should be present", 1, card.getChildCount());
+                assertTrue(card.getChildAt(0) instanceof TransitFlowView);
+                assertEquals("Compact icons and flow should be 80 dp high", 80,
+                        card.getChildAt(0).getHeight() / density, 1);
+                assertFalse("Titles, app names, status text and branding must not be visible",
+                        containsVisibleText(card));
+            });
+        } finally { instrumentation.runOnMainSync(activity::finish); }
+    }
+
     @Test public void flowShowsBothAppsAnimatesAndStopsAfterTargetDraw() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         TransitPreviewActivity activity = open(instrumentation, false);
         AtomicReference<TransitFlowView> renderedFlow = new AtomicReference<>();
         try {
-            assertCardText(instrumentation, activity, "正在解冻");
+            assertCompactCard(instrumentation, activity, "正在解冻");
             String expectedSourceLabel = activity.getPackageManager().getApplicationLabel(
                     activity.getPackageManager().getApplicationInfo("com.android.settings", 0)).toString();
             instrumentation.runOnMainSync(() -> {
@@ -53,8 +74,12 @@ public class SystemTransitRenderingTest {
             });
             instrumentation.waitForIdleSync();
             instrumentation.runOnMainSync(() -> {
+                View card = activity.card();
                 assertSame("Changing stage must reuse the existing app-to-app flow",
-                        flow, findFlow(activity.card()));
+                        flow, findFlow(card));
+                assertFalse("Changing stage must not insert visible status text", containsVisibleText(card));
+                assertTrue("The phase still needs an accessible announcement",
+                        card.getContentDescription().toString().contains("正在打开"));
                 activity.targetDrawn(1);
             });
             instrumentation.waitForIdleSync();
@@ -70,7 +95,7 @@ public class SystemTransitRenderingTest {
         TransitPreviewActivity activity = open(instrumentation, false,
                 "com.icebridge.preview.absent.source", "com.icebridge.preview.absent.target");
         try {
-            assertCardText(instrumentation, activity, "正在解冻");
+            assertCompactCard(instrumentation, activity, "正在解冻");
             instrumentation.runOnMainSync(() -> {
                 TransitFlowView flow = findFlow(activity.card());
                 assertNotNull("Missing package metadata must not remove the flow", flow);
@@ -79,17 +104,17 @@ public class SystemTransitRenderingTest {
         } finally { instrumentation.runOnMainSync(activity::finish); }
     }
 
-    @Test public void nativeCardShowsBothStagesAndWaitsForActualTargetDraw() {
+    @Test public void nativeCardAnnouncesBothStagesAndWaitsForActualTargetDraw() {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         TransitPreviewActivity activity = open(instrumentation, false);
         try {
-            assertCardText(instrumentation, activity, "正在解冻");
+            assertCompactCard(instrumentation, activity, "正在解冻");
             instrumentation.runOnMainSync(() -> {
                 activity.show(1, SystemTransitPresenter.Stage.OPENING, 0xff7e57c2, "light");
                 activity.submitted(1);
             });
             instrumentation.waitForIdleSync();
-            assertCardText(instrumentation, activity, "正在打开");
+            assertCompactCard(instrumentation, activity, "正在打开");
             instrumentation.runOnMainSync(() -> activity.targetDrawn(1));
             instrumentation.waitForIdleSync();
             instrumentation.runOnMainSync(() -> assertNull(activity.card()));
@@ -100,13 +125,13 @@ public class SystemTransitRenderingTest {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         TransitPreviewActivity activity = open(instrumentation, false);
         try {
-            assertCardText(instrumentation, activity, "正在解冻");
+            assertCompactCard(instrumentation, activity, "正在解冻");
             instrumentation.runOnMainSync(() -> {
                 activity.show(2, SystemTransitPresenter.Stage.OPENING, 0xff00796b, "light");
                 activity.targetDrawn(1);
             });
             instrumentation.waitForIdleSync();
-            assertCardText(instrumentation, activity, "正在打开");
+            assertCompactCard(instrumentation, activity, "正在打开");
             instrumentation.runOnMainSync(() -> activity.fail(2));
             instrumentation.waitForIdleSync();
             instrumentation.runOnMainSync(() -> assertNull(activity.card()));
@@ -119,7 +144,7 @@ public class SystemTransitRenderingTest {
         AtomicInteger light = new AtomicInteger();
         AtomicInteger dark = new AtomicInteger();
         try {
-            assertCardText(instrumentation, activity, "正在解冻");
+            assertCompactCard(instrumentation, activity, "正在解冻");
             instrumentation.runOnMainSync(() -> {
                 light.set(((GradientDrawable) activity.card().getBackground()).getColor().getDefaultColor());
                 activity.show(1, SystemTransitPresenter.Stage.OPENING, 0xff7e57c2, "dark");
@@ -140,7 +165,7 @@ public class SystemTransitRenderingTest {
         CountDownLatch downReceived = new CountDownLatch(1);
         CountDownLatch clicked = new CountDownLatch(1);
         try {
-            assertCardText(instrumentation, activity, "正在解冻");
+            assertCompactCard(instrumentation, activity, "正在解冻");
             awaitFocusedAndLaidOut(instrumentation, activity);
             syncInputTransactions(instrumentation.getUiAutomation());
             instrumentation.runOnMainSync(() -> {
@@ -307,19 +332,30 @@ public class SystemTransitRenderingTest {
         }
     }
 
-    private void assertCardText(Instrumentation instrumentation, TransitPreviewActivity activity, String text) {
+    private void assertCompactCard(Instrumentation instrumentation, TransitPreviewActivity activity, String stage) {
         instrumentation.runOnMainSync(() -> {
-            assertNotNull("The native preview card must be attached", activity.card());
-            assertTrue("Missing stage " + text, containsText(activity.card(), text));
+            View card = activity.card();
+            assertNotNull("The native preview card must be attached", card);
+            assertFalse("The compact card must have no visible text", containsVisibleText(card));
+            CharSequence description = card.getContentDescription();
+            assertNotNull("The icon-only card must remain accessible", description);
+            assertTrue("Missing accessible stage " + stage, description.toString().contains(stage));
+            TransitFlowView flow = findFlow(card);
+            assertNotNull("Only the app-to-app visual flow should be shown", flow);
+            assertTrue("The source identity must remain accessible",
+                    description.toString().contains(flow.sourceLabel()));
+            assertTrue("The destination identity must remain accessible",
+                    description.toString().contains(flow.targetLabel()));
         });
     }
 
-    private boolean containsText(View view, String text) {
-        if (view instanceof TextView && text.contentEquals(((TextView) view).getText())) return true;
+    private boolean containsVisibleText(View view) {
+        if (view.getVisibility() != View.VISIBLE) return false;
+        if (view instanceof TextView && ((TextView) view).getText().length() != 0) return true;
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
             for (int index = 0; index < group.getChildCount(); index++) {
-                if (containsText(group.getChildAt(index), text)) return true;
+                if (containsVisibleText(group.getChildAt(index))) return true;
             }
         }
         return false;
