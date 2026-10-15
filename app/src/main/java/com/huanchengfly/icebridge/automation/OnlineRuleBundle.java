@@ -11,6 +11,8 @@ import com.google.gson.stream.JsonToken;
 import java.io.IOException;
 import java.io.StringReader;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -60,7 +62,7 @@ final class OnlineRuleBundle {
     static OnlineRuleBundle parse(String raw, String expectedChecksum) throws IOException {
         require(expectedChecksum != null && HASH.matcher(expectedChecksum).matches(), "bundle-checksum");
         require(raw != null && raw.length() <= MAX_BUNDLE_BYTES, "bundle-size");
-        require(OnlineLinkRuleRepository.checksumMatches(raw, expectedChecksum), "bundle-checksum-mismatch");
+        require(checksumMatches(raw, expectedChecksum), "bundle-checksum-mismatch");
         JsonObject object = object(raw, MAX_BUNDLE_BYTES);
         fields(object, "format", "version", "revision", "rules", "provenance");
         require("icebridge-online-rules".equals(string(object, "format")), "bundle-format");
@@ -135,6 +137,27 @@ final class OnlineRuleBundle {
     static boolean canReuse(Manifest manifest, Cache cache) {
         return cache.bundle != null && cache.bundle.revision == manifest.revision
                 && cache.bundle.checksum.equals(manifest.checksum);
+    }
+
+    /** Shared by app and injected processes without initializing the app repository. */
+    static boolean checksumMatches(String raw, String expected) {
+        return raw != null && expected != null && !expected.isEmpty()
+                && expected.equalsIgnoreCase(sha256(raw));
+    }
+
+    static String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte item : digest) {
+                result.append(Character.forDigit((item >>> 4) & 15, 16));
+                result.append(Character.forDigit(item & 15, 16));
+            }
+            return result.toString();
+        } catch (java.security.NoSuchAlgorithmException error) {
+            throw new IllegalStateException("sha256-unavailable", error);
+        }
     }
 
     private static boolean present(String value) { return value != null && !value.isEmpty(); }

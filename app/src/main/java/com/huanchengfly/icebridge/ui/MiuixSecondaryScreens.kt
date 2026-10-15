@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.content.pm.PackageManager
+import android.content.SharedPreferences
+import android.provider.Settings
 import com.huanchengfly.icebridge.ui.theme.setIceBridgeContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -17,6 +19,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +33,9 @@ import com.huanchengfly.icebridge.activities.BridgePreferencesActivity
 import com.huanchengfly.icebridge.activities.EnhanceModeActivity
 import com.huanchengfly.icebridge.activities.PermissionActivity
 import com.huanchengfly.icebridge.databases.AppConfig
+import com.huanchengfly.icebridge.SystemServerConfigContract
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.huanchengfly.icebridge.engines.RootCommandRunner
 import com.huanchengfly.icebridge.fragments.intro.WorkModeFragment
 import com.huanchengfly.icebridge.services.ClipboardLinkService
@@ -83,7 +89,54 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
     var fallback by remember { mutableStateOf(p.getBoolean(KEY_BROWSER_FALLBACK, true)) }
     var clip by remember { mutableStateOf(p.getBoolean(KEY_CLIPBOARD, false)) }
     var debug by remember { mutableStateOf(p.getBoolean(KEY_DEBUG, false)) }
-    fun setv(k: String, v: Boolean) { a.setPref(k, v); saveConfig(k, v); com.huanchengfly.icebridge.SystemServerConfigContract.notifyChanged(a) }
+    var autonomous by remember { mutableStateOf(p.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false)) }
+    val runtimeStatus = remember { a.getSharedPreferences(SystemServerConfigContract.RUNTIME_STATUS_PREFS, Context.MODE_PRIVATE) }
+    var statusRevision by remember { mutableStateOf(0) }
+    DisposableEffect(a, p, runtimeStatus) {
+        val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            autonomous = p.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false)
+            statusRevision++
+        }
+        val lifecycleListener = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) statusRevision++
+        }
+        p.registerOnSharedPreferenceChangeListener(preferenceListener)
+        runtimeStatus.registerOnSharedPreferenceChangeListener(preferenceListener)
+        a.lifecycle.addObserver(lifecycleListener)
+        onDispose {
+            p.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+            runtimeStatus.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+            a.lifecycle.removeObserver(lifecycleListener)
+        }
+    }
+    val runtimeSummary = remember(statusRevision, autonomous) {
+        val expected = runtimeStatus.getString(SystemServerConfigContract.KEY_RUNTIME_EXPECTED_FINGERPRINT, "")
+        val confirmed = runtimeStatus.getString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, "")
+        val boot = runCatching { Settings.Global.getInt(a.contentResolver, "boot_count", -1) }.getOrDefault(-1)
+        val currentBoot = boot >= 0 && boot == runtimeStatus.getInt(SystemServerConfigContract.KEY_RUNTIME_BOOT_COUNT, -2)
+        val persistedAck = runtimeStatus.getBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, false)
+        val ready = autonomous && currentBoot && !expected.isNullOrBlank() && expected == confirmed &&
+            persistedAck && runtimeStatus.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false)
+        val revision = runtimeStatus.getLong(SystemServerConfigContract.KEY_RUNTIME_REVISION, 0)
+        when {
+            !autonomous && persistedAck && currentBoot && !expected.isNullOrBlank() && expected == confirmed ->
+                "系统已确认关闭，独立运行配置已撤销。"
+            !autonomous && currentBoot && !expected.isNullOrBlank() && expected == confirmed ->
+                "系统尚未确认撤销，请保持本体解冻。" + (runtimeStatus.getString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, "") ?: "")
+            !autonomous -> "未启用。开启并等待系统确认后，再用 IceBox 冻结 IceBridge。"
+            ready -> "配置已由系统保存，可冻结 IceBridge。在线规则 revision $revision；本体冻结后仍由系统执行已启用的功能。"
+            !currentBoot -> "等待本次开机的系统确认。请确认 LSPosed 已启用 system 作用域，暂时保持 IceBridge 解冻。"
+            else -> runtimeStatus.getString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, "")
+                .takeUnless { it.isNullOrBlank() } ?: "等待系统保存并确认当前配置，请暂时保持 IceBridge 解冻。"
+        }
+    }
+    fun setv(k: String, v: Boolean) {
+        runtimeStatus.edit().putBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false)
+            .putBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, false)
+            .putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, "")
+            .putString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, "配置已变化，等待系统重新确认").apply()
+        a.setPref(k, v); saveConfig(k, v); SystemServerConfigContract.notifyChanged(a)
+    }
     fun prereq() { if (!bridge) { bridge = true; setv(KEY_AUTO_BRIDGE, true) }; if (!auto) { auto = true; setv(KEY_AUTO_OPEN, true) } }
     fun setBridge(v: Boolean) { bridge = v; setv(KEY_AUTO_BRIDGE, v); if (!v) { auto = false; native = false; payment = false; setv(KEY_AUTO_OPEN, false); setv(KEY_NATIVE_CAPTURE, false); setv(KEY_PAYMENT_BRIDGE, false) } }
     MiuixPage("桥接与自动化") { pad -> SettingsColumn(pad) {
@@ -91,6 +144,19 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
             SuperSwitch(title="启用增强模式", summary="关闭后暂停所有链接自动处理", checked=enhanced, onCheckedChange={ enhanced=it; setv(KEY_ENHANCE,it) })
             SuperSwitch(title="启用链接桥接", summary="自动识别网址、解冻目标应用并打开", checked=bridge, onCheckedChange={ setBridge(it) })
             SuperSwitch(title="点击后自动打开应用", summary="不需要再点击“在 App 中打开”", checked=auto, onCheckedChange={ auto=it; setv(KEY_AUTO_OPEN,it) })
+        }
+        SectionTitle("冻结本体后运行"); Card(Modifier.fillMaxWidth()) {
+            SuperSwitch(title="冻结 IceBridge 后独立运行", summary="将开关与完整规则同步到系统，在 IceBox 冻结本体后继续处理链接", checked=autonomous,
+                onCheckedChange={ autonomous=it; setv(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME,it) })
+            InfoRow("系统同步状态", runtimeSummary)
+            SuperArrow(title="请求系统同步", summary="重新发送配置，等待本次开机的系统确认", onClick={
+                runtimeStatus.edit().putBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false)
+                    .putBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, false)
+                    .putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, "")
+                    .putString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, "正在请求系统同步，请暂时保持 IceBridge 解冻").apply()
+                SystemServerConfigContract.notifyChanged(a)
+            })
+            InfoRow("配置同步", "修改开关或规则后，请等待系统重新确认。关闭此功能也需要保持本体解冻，等系统同步后再退出。独立配置在重启后恢复；设备上的模块及 system 作用域需要保持启用。当前独立运行仅支持主用户（用户 0），工作资料与其他用户不处理。")
         }
         SectionTitle("触发来源"); Card(Modifier.fillMaxWidth()) {
             SuperSwitch(title="内置链接捕获", summary="通过 system 作用域捕获系统中的 HTTPS 链接", checked=native, onCheckedChange={ if(it) prereq(); native=it; setv(KEY_NATIVE_CAPTURE,it) })

@@ -115,6 +115,60 @@ public class SystemServerConfigContractTest {
         assertEquals(Collections.emptySet(), snapshot.frozenPackages);
     }
 
+    @Test public void autonomousSnapshotPreservesRuntimePreferencesAndAcceptedRevision() throws Exception {
+        String hash = repeat('a', 64);
+        SystemServerConfigContract.Snapshot snapshot = SystemServerConfigContract.parseValues(
+                SystemServerConfigContract.SCHEMA_VERSION, SystemServerConfigContract.STATUS_OK, null,
+                true, true, true, false, true, null,
+                new String[]{"com.tencent.mm|example.com|com.example.app|manual|fixed_deep_link"}, 10,
+                true, false, false, false, 5, hash, repeat('b', 64));
+        assertTrue(snapshot.available);
+        assertTrue(snapshot.autonomousEnabled);
+        assertFalse(snapshot.onlyFrozen);
+        assertFalse(snapshot.browserFallback);
+        assertFalse(snapshot.onlineUpdatesEnabled);
+        assertEquals(5, snapshot.onlineRevision);
+        assertEquals(hash, snapshot.onlineSha256);
+        assertEquals(10, snapshot.toRuntimeState(123).userId);
+        assertEquals("com.tencent.mm", snapshot.toRuntimeState(123).scopedRules.get(0).sourcePackage);
+        assertEquals(5, snapshot.toRuntimeState(123).online.highestRevision);
+        assertEquals("", snapshot.toRuntimeState(123).online.activeRaw);
+    }
+
+    @Test public void independentModeRequiresCompleteTypedRevisionAndConfigFingerprint() {
+        assertRuntimeInvalid(0, "", "", "runtime-fingerprint-invalid");
+        assertRuntimeInvalid(-1, "", repeat('b', 64), "online-metadata-invalid");
+        assertRuntimeInvalid(5, "", repeat('b', 64), "online-metadata-invalid");
+        assertRuntimeInvalid(0, repeat('a', 64), repeat('b', 64), "online-metadata-invalid");
+        assertRuntimeInvalid(5, repeat('a', 64), "invalid", "runtime-fingerprint-invalid");
+    }
+
+    @Test public void olderJvmParseApiKeepsIndependentModeOptedOut() {
+        SystemServerConfigContract.Snapshot snapshot = parse(SystemServerConfigContract.SCHEMA_VERSION,
+                SystemServerConfigContract.STATUS_OK, null, true, true, true, false, true, null, null);
+        assertTrue(snapshot.available);
+        assertFalse(snapshot.autonomousEnabled);
+        assertTrue(snapshot.onlyFrozen);
+        assertTrue(snapshot.browserFallback);
+        assertTrue(snapshot.onlineUpdatesEnabled);
+        assertEquals(0, snapshot.onlineRevision);
+    }
+
+    private static void assertRuntimeInvalid(long revision, String hash, String fingerprint, String expected) {
+        SystemServerConfigContract.Snapshot snapshot = SystemServerConfigContract.parseValues(
+                SystemServerConfigContract.SCHEMA_VERSION, SystemServerConfigContract.STATUS_OK, null,
+                true, true, true, false, true, null, null, 0,
+                true, true, true, true, revision, hash, fingerprint);
+        assertFalse(snapshot.available);
+        assertEquals(expected, snapshot.status);
+    }
+
+    private static String repeat(char value, int count) {
+        char[] values = new char[count];
+        Arrays.fill(values, value);
+        return new String(values);
+    }
+
     private static SystemServerConfigContract.Snapshot parse(Integer schemaVersion, String status,
                                                               String error, boolean recoveryEnabled,
                                                               boolean autoOpenLinks, boolean nativeLinkCapture,

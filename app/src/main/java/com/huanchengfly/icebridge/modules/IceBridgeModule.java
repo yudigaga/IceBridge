@@ -36,6 +36,11 @@ import com.huanchengfly.icebridge.automation.SnapshotCachePolicy;
 import com.huanchengfly.icebridge.android16.PaymentSdkBridgeResolver;
 import com.huanchengfly.icebridge.android16.ResolvedLaunch;
 import com.huanchengfly.icebridge.android16.SystemServerPackageStateProbe;
+import com.huanchengfly.icebridge.android16.SystemAutonomousRuntime;
+import com.huanchengfly.icebridge.android16.AtmsBinderSignatureResolver;
+import com.huanchengfly.icebridge.android16.SystemLaunchPreflight;
+import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
+import com.huanchengfly.icebridge.automation.AutonomousBridgeCoordinator;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -104,6 +109,13 @@ public final class IceBridgeModule extends XposedModule {
     private volatile Handler systemHandler;
     private volatile HandlerThread systemWorkerThread;
     private volatile ContentObserver configurationObserver;
+    private volatile SystemAutonomousRuntime autonomousRuntime;
+    private volatile boolean activityInterceptionReady;
+    private volatile boolean activityPreflightReady;
+    private volatile SystemRuntimeConfig.State compatibilityState;
+    private volatile RecoveryConfiguration compatibilityConfiguration;
+    private final BoundedExpiringDeduplicator autonomousObservations =
+            new BoundedExpiringDeduplicator(1_500L, 256);
     private final Runnable configurationChanged = () -> refreshRecoveryConfiguration("notification", true);
     private volatile Field activityStarterRequestField;
     private volatile Field activityStarterIntentField;
@@ -141,6 +153,7 @@ public final class IceBridgeModule extends XposedModule {
         ensureSystemWorker();
         scheduleRecoveryConfigurationRefresh(2_000L);
         log(4, TAG, "package-state capability: " + packageStateProbe.getCapability());
+        installAtmsBinderPreflight(param.getClassLoader());
         installActivityStartInterceptorHook(param.getClassLoader());
         installActivityStarterExecuteHook(param.getClassLoader());
         // ClipboardService may hold a global system lock. The hook only snapshots plain text,
@@ -154,6 +167,34 @@ public final class IceBridgeModule extends XposedModule {
         if (PACKAGE_NAME.equals(packageName)) {
             installActivationHook(param.getClassLoader());
         }
+    }
+
+    private void installAtmsBinderPreflight(ClassLoader loader) {
+        Method method = AtmsBinderSignatureResolver.resolve(loader);
+        if (method == null) {
+            log(5, TAG, "autonomous preflight unavailable: public Binder signature not found");
+            return;
+        }
+        hook(method).setId("icebridge:autonomous-binder-preflight")
+                .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain -> {
+                    try {
+                        SystemAutonomousRuntime runtime = autonomousRuntime;
+                        Object original = chain.getArg(AtmsBinderSignatureResolver.INTENT_INDEX);
+                        Object user = chain.getArg(AtmsBinderSignatureResolver.USER_ID_INDEX);
+                        if (runtime != null && original instanceof Intent && user instanceof Integer) {
+                            int callerUser = (Integer) UserHandle.class.getDeclaredMethod("getUserId", Integer.TYPE)
+                                    .invoke(null, Binder.getCallingUid());
+                            boolean outside = SystemLaunchPreflight.isOutsideGlobalLock(chain.getThisObject(),
+                                    Binder.getCallingPid(), android.os.Process.myPid());
+                            runtime.prepareOriginalLaunch((Intent) original, (Integer) user, callerUser, outside);
+                        }
+                    } catch (Throwable error) {
+                        log(5, TAG, "autonomous preflight preserved original: " + error.getClass().getSimpleName());
+                    }
+                    return chain.proceed();
+                });
+        activityPreflightReady = true;
+        log(4, TAG, "autonomous public Binder preflight installed");
     }
 
     private void installActivityStartInterceptorHook(ClassLoader classLoader) {
@@ -180,6 +221,10 @@ public final class IceBridgeModule extends XposedModule {
                         // resultTo and Activity token to complete the SDK handshake.
                         return chain.proceed();
                     }
+                    // The independent path never replaces a request with an IceBridge component.
+                    // ActivityStarter observes the same request and queues work after its finally
+                    // block, outside the framework launch locks.
+                    if (autonomousConfiguration(userId) != null) return chain.proceed();
                     Intent nativeBridge = buildNativeAutoOpenBridge(original, userId, "interceptor");
                     if (nativeBridge != null) {
                         log(4, TAG, "native link redirected: target="
@@ -227,6 +272,7 @@ public final class IceBridgeModule extends XposedModule {
                     .setId("icebridge:global-auto-open-activity-starter")
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
+                        AutonomousBridgeCoordinator.Request<Intent> autonomous = null;
                         try {
                             Object request = activityStarterRequestField.get(chain.getThisObject());
                             Intent original = request == null ? null
@@ -241,31 +287,38 @@ public final class IceBridgeModule extends XposedModule {
                                 // Alipay's signed SDK callback. Only package state is repaired.
                                 return chain.proceed();
                             }
-                            // Keep this callback lock-safe: identify values already in memory and
-                            // replace only a recognized WebView link with our foreground trampoline.
-                            // No package query, provider, root, IceBox, or Activity launch runs here.
-                            Intent bridge = buildNativeAutoOpenBridge(original, userId, "activity_starter");
-                            if (bridge == null) {
-                                // If ActivityStartInterceptor already replaced its local argument,
-                                // mRequest still contains the original WeChat Intent. Reuse that
-                                // exact bridge here; otherwise ActivityStarter would continue with
-                                // the original request and open X/Bilibili a second time.
-                                bridge = consumeNativeBridgeReplacement(original, userId);
-                            }
-                            if (bridge != null) {
-                                // Keep the framework request's Intent isolated from the source
-                                // object's instance. A few launchers/webviews reuse that object.
-                                activityStarterIntentField.set(request, new Intent(bridge));
-                                log(4, TAG, "native link redirected via ActivityStarter: target="
-                                        + bridge.getStringExtra(EXTRA_TARGET_PACKAGE));
+                            if (autonomousConfiguration(userId) != null) {
+                                autonomous = captureAutonomousRequest(original, userId, request);
+                            } else {
+                                // The normal mode keeps its existing foreground app trampoline.
+                                Intent bridge = buildNativeAutoOpenBridge(original, userId, "activity_starter");
+                                if (bridge == null) bridge = consumeNativeBridgeReplacement(original, userId);
+                                if (bridge != null) {
+                                    activityStarterIntentField.set(request, new Intent(bridge));
+                                    log(4, TAG, "native link redirected via ActivityStarter: target="
+                                            + bridge.getStringExtra(EXTRA_TARGET_PACKAGE));
+                                }
                             }
                         } catch (Throwable error) {
                             log(5, TAG, "global auto-open fallback skipped: "
                                     + error.getClass().getSimpleName());
                         }
-                        return chain.proceed();
+                        // Always execute the framework's own finally/cleanup. Only a failed,
+                        // result-free direct launch can be retried with the system's identity.
+                        Object result = chain.proceed();
+                        if (autonomous != null) {
+                            boolean web = autonomous.kind == AutonomousBridgeCoordinator.Kind.WEB_RULE
+                                    && autonomous.explicitTarget == null;
+                            boolean missing = result instanceof Integer
+                                    && ((Integer) result == -1 || (Integer) result == -2);
+                            if (web || missing) {
+                                enqueueAutonomous(autonomous);
+                            }
+                        }
+                        return result;
                     });
             log(4, TAG, "global auto-open fallback hook installed: " + resolved.description);
+            activityInterceptionReady = true;
         } catch (Throwable error) {
             logError("global auto-open fallback hook installation failed", error);
         }
@@ -404,6 +457,99 @@ public final class IceBridgeModule extends XposedModule {
         // The host is intentionally not restricted to China Unicom: Unicom, Telecom and
         // other apps embed the same Alipay SDK Activity classes.
         return intent.getComponent().getClassName().startsWith("com.alipay.sdk.app.");
+    }
+
+    private SystemRuntimeConfig.State autonomousConfiguration(int userId) {
+        SystemAutonomousRuntime runtime = autonomousRuntime;
+        return runtime == null ? null : runtime.current(userId);
+    }
+
+    /** Only value inspection runs in the hook. No Binder, disk, network or package query. */
+    private AutonomousBridgeCoordinator.Request<Intent> captureAutonomousRequest(
+            Intent original, int userId, Object frameworkRequest) {
+        SystemRuntimeConfig.State configuration = autonomousConfiguration(userId);
+        if (original == null || configuration == null || !configuration.recoveryEnabled
+                || !configuration.autoOpenLinks) return null;
+        String token = original.getStringExtra(EXTRA_NATIVE_REPLAY_TOKEN);
+        if (token != null && consumeReplayToken(token)) return null;
+        // A start-for-result needs the original caller/token relationship. Payment prewarm above
+        // deliberately preserves it; the independent launcher must not fabricate a replacement.
+        Field resultTo = frameworkRequest == null ? null : findField(frameworkRequest.getClass(), "resultTo");
+        try { if (resultTo != null && resultTo.get(frameworkRequest) != null) return null; }
+        catch (IllegalAccessException ignored) { return null; }
+        NativeActivityLinkCapture.CapturedLink captured = configuration.nativeLinkCapture
+                ? NativeActivityLinkCapture.capture(original) : null;
+        String sourcePackage = captured == null ? "*" : captured.sourcePackage;
+        if (captured == null && frameworkRequest != null) {
+            Field callingPackage = findField(frameworkRequest.getClass(), "callingPackage");
+            try {
+                Object source = callingPackage == null ? null : callingPackage.get(frameworkRequest);
+                if (source instanceof String && PACKAGE_NAME_PATTERN.matcher((String) source).matches()) {
+                    sourcePackage = (String) source;
+                }
+            } catch (IllegalAccessException ignored) { }
+        }
+        String webUrl = captured == null ? (configuration.nativeLinkCapture
+                && Intent.ACTION_VIEW.equals(original.getAction()) && original.getData() != null
+                ? original.getData().toString() : null) : captured.url;
+        if (webUrl != null && webUrl.length() <= 16_384) {
+            Uri uri = Uri.parse(webUrl);
+            String scheme = uri.getScheme();
+            if (("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme)) && uri.getHost() != null) {
+                List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(configuration.scopedRules,
+                        sourcePackage, uri.getHost());
+                if (matches.isEmpty()) return null;
+                String bound = original.getComponent() == null ? original.getPackage()
+                        : original.getComponent().getPackageName();
+                String directTarget = ScopedRuleResolver.targetPackages(matches).contains(bound) ? bound : null;
+                // Strip source-private WebView extras immediately; only a public URL is forwarded.
+                Intent payload = new Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE);
+                return new AutonomousBridgeCoordinator.Request<>(AutonomousBridgeCoordinator.Kind.WEB_RULE,
+                        userId, sourcePackage, uri.getHost(), directTarget,
+                        BoundedExpiringDeduplicator.fingerprint(userId, sourcePackage + ":" + webUrl),
+                        payload, false, configuration.autoOpenLinks, configuration.onlyFrozen);
+            }
+        }
+        Uri direct = CustomSchemeTargetResolver.findCustomSchemeUri(original);
+        String target = CustomSchemeTargetResolver.findTargetPackageForCustomSchemeUri(direct);
+        if (target == null || PACKAGE_NAME.equals(target) || !Intent.ACTION_VIEW.equals(original.getAction())) return null;
+        if ((original.getComponent() != null && !target.equals(original.getComponent().getPackageName()))
+                || (original.getPackage() != null && !target.equals(original.getPackage()))) return null;
+        if ((original.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) != 0
+                || original.getClipData() != null || original.getSelector() != null) return null;
+        Intent payload = direct.equals(original.getData()) ? new Intent(original)
+                : new Intent(Intent.ACTION_VIEW, direct).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(target);
+        return new AutonomousBridgeCoordinator.Request<>(AutonomousBridgeCoordinator.Kind.EXPLICIT,
+                userId, "*", null, target,
+                BoundedExpiringDeduplicator.fingerprint(userId, original.toUri(Intent.URI_INTENT_SCHEME)),
+                payload, false, true, configuration.onlyFrozen);
+    }
+
+    private void enqueueAutonomous(AutonomousBridgeCoordinator.Request<Intent> request) {
+        Handler worker = systemHandler;
+        if (worker == null || autonomousRuntime == null) return;
+        String key = request.userId + ":" + request.sourcePackage + ":" + request.fingerprint;
+        if (!autonomousObservations.claim(key, SystemClock.elapsedRealtime())) return;
+        worker.post(() -> {
+            SystemAutonomousRuntime runtime = autonomousRuntime;
+            if (runtime != null) runtime.execute(request);
+        });
+    }
+
+    private void ensureAutonomousRuntime(Context context) {
+        if (autonomousRuntime != null || systemHandler == null || context == null) return;
+        SystemAutonomousRuntime runtime = new SystemAutonomousRuntime(context, systemHandler,
+                (intent, user, source) -> {
+                    String token = UUID.randomUUID().toString();
+                    pruneReplayTokens(SystemClock.elapsedRealtime());
+                    replayTokens.put(token, SystemClock.elapsedRealtime() + REPLAY_TOKEN_WINDOW_MILLIS);
+                    intent.putExtra(EXTRA_NATIVE_REPLAY_TOKEN, token);
+                }, message -> log(4, TAG, message));
+        // Context can exist before PackageManager finishes bootstrapping. Retry next tick instead
+        // of permanently publishing an unavailable Binder adapter into the independent runtime.
+        if (!runtime.isReady()) return;
+        runtime.restore();
+        autonomousRuntime = runtime;
     }
 
     private Intent buildNativeAutoOpenBridge(Intent original, int userId, String hookName) {
@@ -939,6 +1085,8 @@ public final class IceBridgeModule extends XposedModule {
             public void run() {
                 registerConfigurationObserver();
                 RecoveryConfiguration configuration = refreshRecoveryConfiguration("frozen-cache", true);
+                SystemAutonomousRuntime runtime = autonomousRuntime;
+                if (runtime != null) runtime.tick();
                 log(4, TAG, "frozen package cache: status=" + configuration.status
                         + ", packages=" + configuration.frozenPackages.size());
                 Handler currentWorker = systemHandler;
@@ -1185,6 +1333,14 @@ public final class IceBridgeModule extends XposedModule {
     }
 
     private RecoveryConfiguration currentRecoveryConfiguration() {
+        SystemRuntimeConfig.State retained = autonomousConfiguration(0);
+        if (retained != null) {
+            if (compatibilityState != retained) {
+                compatibilityConfiguration = RecoveryConfiguration.autonomous(retained);
+                compatibilityState = retained;
+            }
+            return compatibilityConfiguration;
+        }
         RecoveryConfiguration current = recoveryConfiguration;
         if (current.available && !SnapshotCachePolicy.isUsable(
                 lastSuccessfulRecoveryConfigurationMillis, SystemClock.elapsedRealtime())) {
@@ -1268,6 +1424,13 @@ public final class IceBridgeModule extends XposedModule {
             if (systemContext == null) {
                 return RecoveryConfiguration.unavailable("system-context-null");
             }
+            ensureAutonomousRuntime(systemContext);
+            SystemAutonomousRuntime runtime = autonomousRuntime;
+            if (runtime != null && runtime.ownerFrozen()) {
+                SystemRuntimeConfig.State retained = runtime.current(0);
+                return retained == null ? RecoveryConfiguration.unavailable("owner-frozen-no-retained-config")
+                        : RecoveryConfiguration.autonomous(retained);
+            }
             // This hook executes while system_server is handling another app's Binder call.
             // Drop that inherited identity so ConfigProvider correctly sees system_server (UID 1000).
             long identityToken = Binder.clearCallingIdentity();
@@ -1283,6 +1446,12 @@ public final class IceBridgeModule extends XposedModule {
                 Binder.restoreCallingIdentity(identityToken);
             }
             SystemServerConfigContract.Snapshot parsed = SystemServerConfigContract.parse(snapshot);
+            if (parsed.available && runtime != null) {
+                runtime.accept(parsed, activityInterceptionReady && activityPreflightReady
+                        && (!parsed.clipboardAutoOpen || clipboardHookInstalled));
+                SystemRuntimeConfig.State retained = runtime.current(parsed.userId);
+                if (retained != null) return RecoveryConfiguration.autonomous(retained);
+            }
             return parsed.available
                     ? RecoveryConfiguration.available(parsed.recoveryEnabled, parsed.autoOpenLinks,
                     parsed.nativeLinkCapture, parsed.clipboardAutoOpen, parsed.paymentSdkBridge,
@@ -1356,6 +1525,25 @@ public final class IceBridgeModule extends XposedModule {
         static RecoveryConfiguration unavailable(String status) {
             return new RecoveryConfiguration(false, false, false, false, false, false, status,
                     Collections.emptySet(), new String[0], -1);
+        }
+
+        private RecoveryConfiguration(SystemRuntimeConfig.State state) {
+            available = true;
+            enabled = state.recoveryEnabled;
+            autoOpenLinks = state.autoOpenLinks;
+            nativeLinkCapture = state.nativeLinkCapture;
+            clipboardAutoOpen = state.clipboardAutoOpen;
+            paymentSdkBridge = state.paymentSdkBridge;
+            status = "autonomous-persisted";
+            userId = state.userId;
+            frozenPackages = Collections.emptySet(); // Independent routing always reads live PM state.
+            onlineHostRules = new String[0];
+            scopedRules = state.scopedRules;
+            onlineHostCandidates = Collections.emptyMap();
+        }
+
+        static RecoveryConfiguration autonomous(SystemRuntimeConfig.State state) {
+            return new RecoveryConfiguration(state);
         }
     }
 
@@ -1700,6 +1888,22 @@ public final class IceBridgeModule extends XposedModule {
 
     /** Runs off ClipboardService's lock; it only dispatches an explicit event to the app process. */
     private void observeClipboard(String raw, int userId) {
+        SystemRuntimeConfig.State autonomous = autonomousConfiguration(userId);
+        if (autonomous != null) {
+            if (!autonomous.recoveryEnabled || !autonomous.autoOpenLinks || !autonomous.clipboardAutoOpen) return;
+            String candidate = IntentUrlExtractor.extractUrl(raw);
+            if (candidate == null) candidate = raw;
+            if (candidate == null || candidate.length() > 16_384) return;
+            Uri uri = Uri.parse(candidate.trim());
+            String scheme = uri.getScheme();
+            if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) || uri.getHost() == null) return;
+            Intent payload = new Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE);
+            enqueueAutonomous(new AutonomousBridgeCoordinator.Request<>(AutonomousBridgeCoordinator.Kind.WEB_RULE,
+                    userId, "*", uri.getHost(), null,
+                    "clipboard:" + BoundedExpiringDeduplicator.fingerprint(userId, candidate), payload,
+                    false, true, autonomous.onlyFrozen));
+            return;
+        }
         RecoveryConfiguration configuration = currentRecoveryConfiguration();
         if (!matchesSnapshotUser(configuration, userId)) return;
         if (!configuration.available) {

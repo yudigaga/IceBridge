@@ -17,6 +17,12 @@ HTTP(S) mappings come from manual rules and the project's [owned online rule fee
 
 For setup and the recommended LSPosed scope, see [native link capture](docs/NATIVE_LINK_CAPTURE.md). The default scope is `system` only; no WeChat, QQ, browser, or target-app scope is required. System-side capture observes Activity requests and does not provide visibility into every in-process WebView navigation.
 
+## Run while IceBridge itself is frozen
+
+In **Bridge and automation**, enable **Run independently after freezing IceBridge**. Keep the app unfrozen until the system confirms that the current configuration has been saved, then freeze it with IceBox. The opt-in system runtime retains rules and enabled features, reads live target package state, thaws and launches targets without an IceBridge Activity, and updates the owned online rule feed. It never thaws IceBridge itself.
+
+This mode currently supports Android user 0 and disabled/hidden packages. Keep the LSPosed module and `system` scope enabled. After changing rules or disabling the mode, wait for a fresh system acknowledgement before freezing the app again. Installation, ROM restrictions, actual framework injection after reboot and payment callbacks require device verification; see [setup and validation boundaries](docs/AUTONOMOUS_RUNTIME.md).
+
 ## Appearance
 
 Open **Appearance → Theme and colors** on the home screen to choose a fixed preset or a custom `#RRGGBB` color. Random colors can change daily or on each fresh app launch. Light and dark appearances share the same color family, with separate tones for page backgrounds, medium/small cards, dialogs and controls. See [theme behavior and validation](docs/THEMES.md).

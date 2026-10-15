@@ -14,12 +14,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.io.IOException;
-import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.nio.ByteBuffer;
-import java.nio.charset.CodingErrorAction;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -35,10 +30,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
 import okhttp3.HttpUrl;
-import okhttp3.Call;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
 
 /**
  * Downloads the owner's versioned declarative rule bundle. The former third-party host cache
@@ -68,13 +59,11 @@ public final class OnlineLinkRuleRepository {
     private static final String KEY_FAILURE_COUNT = "online_rule_failure_count";
     private static final String KEY_RETRY_AT = "online_rule_retry_at";
     private static final long UPDATE_INTERVAL_MILLIS = TimeUnit.DAYS.toMillis(7);
-    private static final long REFRESH_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(30);
+    private static final long REFRESH_TIMEOUT_NANOS = OnlineRuleTransport.REFRESH_TIMEOUT_NANOS;
     private static final int MAX_HOSTS = 96;
     private static final String SOURCE_NAME = "自有规则 yudigaga/IceBridge";
-    private static final HttpUrl MANIFEST_URL = HttpUrl.parse(
-            "https://raw.githubusercontent.com/yudigaga/IceBridge/rules/manifest.json");
-    private static final HttpUrl FALLBACK_MANIFEST_URL = HttpUrl.parse(
-            "https://cdn.jsdelivr.net/gh/yudigaga/IceBridge@rules/manifest.json");
+    private static final HttpUrl MANIFEST_URL = OnlineRuleTransport.MANIFEST_URL;
+    private static final HttpUrl FALLBACK_MANIFEST_URL = OnlineRuleTransport.FALLBACK_MANIFEST_URL;
     private static final Pattern PACKAGE_PATTERN = Pattern.compile("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+");
     private static final Pattern HOST_PATTERN = Pattern.compile("[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+");
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> new Thread(r, "IceBridge-online-rules"));
@@ -86,15 +75,41 @@ public final class OnlineLinkRuleRepository {
     private static final Object CALLBACK_LOCK = new Object();
     private static final Object CACHE_LOCK = new Object();
     private static volatile OwnedCacheSnapshot lastOwnedCache;
-    private static final OkHttpClient CLIENT = new OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .callTimeout(30, TimeUnit.SECONDS)
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .build();
+    private static final OnlineRuleTransport TRANSPORT = new OnlineRuleTransport();
 
     private OnlineLinkRuleRepository() {
+    }
+
+    /** Tiny atomic IPC metadata; raw rule bundles are intentionally not part of this view. */
+    public static AcceptedMetadata getAcceptedMetadata(Context context) {
+        Context app = app(context);
+        if (app == null) throw new IllegalArgumentException("context-unavailable");
+        Map<String, ?> values = prefs(app).getAll();
+        Object revision = values.get(KEY_HIGHEST_REVISION);
+        Object hash = values.get(KEY_HIGHEST_HASH);
+        if (revision != null && !(revision instanceof Long)) {
+            throw new IllegalStateException("revision-state-invalid");
+        }
+        if (hash != null && !(hash instanceof String)) {
+            throw new IllegalStateException("revision-state-invalid");
+        }
+        long highest = revision == null ? 0 : (Long) revision;
+        String checksum = hash == null ? "" : ((String) hash).toLowerCase(Locale.ROOT);
+        if (highest < 0 || (highest == 0 && !checksum.isEmpty())
+                || (highest > 0 && !checksum.matches("[0-9a-f]{64}"))) {
+            throw new IllegalStateException("revision-state-invalid");
+        }
+        return new AcceptedMetadata(highest, checksum);
+    }
+
+    public static final class AcceptedMetadata {
+        public final long highestRevision;
+        public final String highestSha256;
+
+        private AcceptedMetadata(long highestRevision, String highestSha256) {
+            this.highestRevision = highestRevision;
+            this.highestSha256 = highestSha256;
+        }
     }
 
     public static void maybeRefreshAsync(Context context) {
@@ -324,7 +339,7 @@ public final class OnlineLinkRuleRepository {
         try {
             // Leave a bounded part of the same task deadline for the CDN on restricted networks.
             return downloadFrom(preferences, MANIFEST_URL,
-                    Math.min(deadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(18)));
+                    Math.min(deadline, System.nanoTime() + OnlineRuleTransport.PRIMARY_TIMEOUT_NANOS));
         } catch (IOException firstFailure) {
             return downloadFrom(preferences, FALLBACK_MANIFEST_URL, deadline);
         }
@@ -347,35 +362,11 @@ public final class OnlineLinkRuleRepository {
 
     /** A validated relative path stays within the manifest directory and HTTPS origin. */
     static HttpUrl bundleUrl(HttpUrl manifestUrl, String path) throws IOException {
-        if (manifestUrl == null || !"https".equals(manifestUrl.scheme()) || path == null
-                || path.startsWith("/") || path.contains("..") || path.contains("\\")
-                || path.contains(":") || path.contains("%") || path.contains("?") || path.contains("#")) {
-            throw new IOException("bundle-url-invalid");
-        }
-        HttpUrl base = manifestUrl.resolve(".");
-        HttpUrl result = base == null ? null : base.resolve(path);
-        if (result == null || !result.scheme().equals(manifestUrl.scheme())
-                || !result.host().equals(manifestUrl.host()) || result.port() != manifestUrl.port()
-                || !result.encodedPath().startsWith(base.encodedPath())) throw new IOException("bundle-origin");
-        return result;
+        return OnlineRuleTransport.bundleUrl(manifestUrl, path);
     }
 
     private static String fetch(HttpUrl url, int maxBytes, long deadline) throws IOException {
-        if (url == null || maxBytes <= 0) throw new IOException("request-invalid");
-        long remaining = deadline - System.nanoTime();
-        if (remaining <= 0) throw new IOException("refresh-deadline");
-        Request request = new Request.Builder().url(url).header("User-Agent", "IceBridge-online-rules/1")
-                .header("Cache-Control", "no-cache").build();
-        Call call = CLIENT.newCall(request);
-        // Both requests consume one deadline, including DNS, connect, and response-body reads.
-        call.timeout().timeout(remaining, TimeUnit.NANOSECONDS);
-        try (Response response = call.execute()) {
-            if (!response.isSuccessful() || response.body() == null) throw new IOException("http-" + response.code());
-            if (response.body().contentLength() > maxBytes) throw new IOException("response-too-large");
-            try (InputStream input = response.body().byteStream()) {
-                return readUtf8Bounded(input, maxBytes);
-            }
-        }
+        return TRANSPORT.fetch(url, maxBytes, deadline);
     }
 
     static long retryDelayMillis(int failures) {
@@ -450,19 +441,7 @@ public final class OnlineLinkRuleRepository {
 
     /** Reads a response without allowing a missing or forged Content-Length to cause unbounded allocation. */
     static String readUtf8Bounded(InputStream input, int maxBytes) throws IOException {
-        if (input == null) throw new IOException("response-body-invalid");
-        if (maxBytes <= 0) throw new IOException("response-limit-invalid");
-        ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(maxBytes, 16 * 1024));
-        byte[] buffer = new byte[4096];
-        int total = 0;
-        int read;
-        while ((read = input.read(buffer)) != -1) {
-            if (read > maxBytes - total) throw new IOException("response-too-large");
-            output.write(buffer, 0, read);
-            total += read;
-        }
-        return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(output.toByteArray())).toString();
+        return OnlineRuleTransport.readUtf8Bounded(input, maxBytes);
     }
 
     /** Accept only exact host patterns such as xhslink\\.com; reject all general-purpose regex. */
@@ -508,19 +487,11 @@ public final class OnlineLinkRuleRepository {
     }
 
     static boolean checksumMatches(String raw, String expected) {
-        return expected != null && !expected.isEmpty() && expected.equalsIgnoreCase(sha256(raw));
+        return OnlineRuleBundle.checksumMatches(raw, expected);
     }
 
     static String sha256(String value) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(digest.length * 2);
-            for (byte item : digest) result.append(String.format(Locale.ROOT, "%02x", item & 0xff));
-            return result.toString();
-        } catch (Exception error) {
-            throw new IllegalStateException("sha256-unavailable", error);
-        }
+        return OnlineRuleBundle.sha256(value);
     }
 
     /** Reads both the former host/package cache and the current host/packages cache. */

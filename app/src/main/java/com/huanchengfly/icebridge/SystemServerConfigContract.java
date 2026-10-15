@@ -8,6 +8,7 @@ import android.util.Log;
 
 import com.huanchengfly.icebridge.automation.LinkRuleEntry;
 import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
+import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -18,6 +19,7 @@ import java.util.List;
 public final class SystemServerConfigContract {
     public static final String AUTHORITY = "io.github.yudigaga.icebridge.providers.ConfigProvider";
     public static final String METHOD_GET_SNAPSHOT = "get_system_server_snapshot";
+    public static final String METHOD_REPORT_RUNTIME_STATUS = "report_autonomous_runtime_status";
     public static final String KEY_SCHEMA_VERSION = "schema_version";
     public static final String KEY_XHS_RECOVERY = "xhs_resolve_recovery";
     public static final String KEY_AUTO_OPEN_LINKS = "auto_open_links";
@@ -29,9 +31,24 @@ public final class SystemServerConfigContract {
     public static final String KEY_FROZEN_PACKAGES = "frozen_packages";
     public static final String KEY_ONLINE_HOST_RULES = "online_host_rules";
     public static final String KEY_USER_ID = "snapshot_user_id";
+    public static final String KEY_AUTONOMOUS_RUNTIME = "autonomous_runtime_enabled";
+    public static final String KEY_ONLY_FROZEN = "only_frozen_link_targets";
+    public static final String KEY_BROWSER_FALLBACK = "link_browser_fallback";
+    public static final String KEY_ONLINE_UPDATES = "online_link_rule_updates";
+    public static final String KEY_ONLINE_REVISION = "online_rules_highest_revision";
+    public static final String KEY_ONLINE_SHA256 = "online_rules_highest_sha256";
+    public static final String KEY_CONFIG_FINGERPRINT = "runtime_config_fingerprint";
+    public static final String KEY_RUNTIME_READY = "runtime_ready";
+    public static final String KEY_RUNTIME_PERSISTED_ACK = "runtime_persisted_ack";
+    public static final String KEY_RUNTIME_MESSAGE = "runtime_message";
+    public static final String KEY_RUNTIME_REVISION = "runtime_revision";
+    public static final String KEY_RUNTIME_STATUS_UPDATED_AT = "runtime_status_updated_at";
+    public static final String KEY_RUNTIME_BOOT_COUNT = "runtime_boot_count";
+    public static final String RUNTIME_STATUS_PREFS = "autonomous_runtime_status";
+    public static final String KEY_RUNTIME_EXPECTED_FINGERPRINT = "expected_config_fingerprint";
     public static final String STATUS_OK = "ok";
     public static final String STATUS_UNAVAILABLE = "unavailable";
-    public static final int SCHEMA_VERSION = 7;
+    public static final int SCHEMA_VERSION = 8;
 
     private SystemServerConfigContract() {
     }
@@ -63,7 +80,14 @@ public final class SystemServerConfigContract {
                 snapshot.getBoolean(KEY_PAYMENT_SDK_BRIDGE, true),
                 snapshot.getStringArray(KEY_FROZEN_PACKAGES),
                 snapshot.getStringArray(KEY_ONLINE_HOST_RULES),
-                snapshot.getInt(KEY_USER_ID, -1));
+                snapshot.getInt(KEY_USER_ID, -1),
+                snapshot.getBoolean(KEY_AUTONOMOUS_RUNTIME, false),
+                snapshot.getBoolean(KEY_ONLY_FROZEN, true),
+                snapshot.getBoolean(KEY_BROWSER_FALLBACK, true),
+                snapshot.getBoolean(KEY_ONLINE_UPDATES, true),
+                snapshot.getLong(KEY_ONLINE_REVISION, 0L),
+                snapshot.getString(KEY_ONLINE_SHA256, ""),
+                snapshot.getString(KEY_CONFIG_FINGERPRINT, ""));
     }
 
     // Kept independent of Android Bundle so the contract rules can be covered by local JVM tests.
@@ -72,6 +96,18 @@ public final class SystemServerConfigContract {
                                 boolean nativeLinkCapture, boolean clipboardAutoOpen,
                                 boolean paymentSdkBridge, String[] frozenPackages,
                                 String[] onlineHostRules, int userId) {
+        return parseValues(schemaVersion, status, error, recoveryEnabled, autoOpenLinks, nativeLinkCapture,
+                clipboardAutoOpen, paymentSdkBridge, frozenPackages, onlineHostRules, userId,
+                false, true, true, true, 0L, "", "");
+    }
+
+    static Snapshot parseValues(Integer schemaVersion, String status, String error,
+                                boolean recoveryEnabled, boolean autoOpenLinks,
+                                boolean nativeLinkCapture, boolean clipboardAutoOpen,
+                                boolean paymentSdkBridge, String[] frozenPackages,
+                                String[] onlineHostRules, int userId, boolean autonomousEnabled,
+                                boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled,
+                                long onlineRevision, String onlineSha256, String configFingerprint) {
         if (schemaVersion == null) {
             return Snapshot.unavailable("null-snapshot");
         }
@@ -84,9 +120,20 @@ public final class SystemServerConfigContract {
                     : error);
         }
         if (userId < 0 || userId > 999) return Snapshot.unavailable("snapshot-user-invalid");
+        if (onlineRevision < 0 || onlineSha256 == null
+                || (onlineRevision == 0 && !onlineSha256.isEmpty())
+                || (onlineRevision > 0 && !onlineSha256.matches("[0-9a-f]{64}"))) {
+            return Snapshot.unavailable("online-metadata-invalid");
+        }
+        if (configFingerprint == null || (!configFingerprint.isEmpty()
+                && !configFingerprint.matches("[0-9a-f]{64}"))
+                || (autonomousEnabled && configFingerprint.isEmpty())) {
+            return Snapshot.unavailable("runtime-fingerprint-invalid");
+        }
         try {
             return Snapshot.available(recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
-                    paymentSdkBridge, frozenPackages, onlineHostRules, userId);
+                    paymentSdkBridge, frozenPackages, onlineHostRules, userId, autonomousEnabled,
+                    onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint);
         } catch (IllegalArgumentException invalidRules) {
             return Snapshot.unavailable("scoped-rules-invalid");
         }
@@ -103,10 +150,20 @@ public final class SystemServerConfigContract {
         public final String[] onlineHostRules;
         public final List<LinkRuleEntry> scopedRules;
         public final int userId;
+        public final boolean autonomousEnabled;
+        public final boolean onlyFrozen;
+        public final boolean browserFallback;
+        public final boolean onlineUpdatesEnabled;
+        public final long onlineRevision;
+        public final String onlineSha256;
+        public final String configFingerprint;
 
         private Snapshot(boolean available, boolean recoveryEnabled, boolean autoOpenLinks,
                          boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge, String status,
-                         Set<String> frozenPackages, String[] onlineHostRules, int userId) {
+                         Set<String> frozenPackages, String[] onlineHostRules, int userId,
+                         boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
+                         boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
+                         String configFingerprint) {
             this.available = available;
             this.recoveryEnabled = recoveryEnabled;
             this.autoOpenLinks = autoOpenLinks;
@@ -118,11 +175,29 @@ public final class SystemServerConfigContract {
             this.onlineHostRules = onlineHostRules == null ? new String[0] : onlineHostRules.clone();
             this.scopedRules = ScopedRuleResolver.decode(this.onlineHostRules);
             this.userId = userId;
+            this.autonomousEnabled = autonomousEnabled;
+            this.onlyFrozen = onlyFrozen;
+            this.browserFallback = browserFallback;
+            this.onlineUpdatesEnabled = onlineUpdatesEnabled;
+            this.onlineRevision = onlineRevision;
+            this.onlineSha256 = onlineSha256;
+            this.configFingerprint = configFingerprint;
+        }
+
+        public SystemRuntimeConfig.State toRuntimeState(long savedAtEpochMillis) throws java.io.IOException {
+            if (!available) throw new java.io.IOException("snapshot-unavailable");
+            return new SystemRuntimeConfig.State(SCHEMA_VERSION, userId, savedAtEpochMillis,
+                    autonomousEnabled, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
+                    paymentSdkBridge, onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineHostRules,
+                    new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0));
         }
 
         private static Snapshot available(boolean recoveryEnabled, boolean autoOpenLinks,
                                           boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
-                                          String[] frozenPackages, String[] onlineHostRules, int userId) {
+                                          String[] frozenPackages, String[] onlineHostRules, int userId,
+                                          boolean autonomousEnabled, boolean onlyFrozen, boolean browserFallback,
+                                          boolean onlineUpdatesEnabled, long onlineRevision, String onlineSha256,
+                                          String configFingerprint) {
             Set<String> values = new LinkedHashSet<>();
             if (frozenPackages != null) {
                 values.addAll(Arrays.asList(frozenPackages));
@@ -130,11 +205,13 @@ public final class SystemServerConfigContract {
                 values.remove("");
             }
             return new Snapshot(true, recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
-                    paymentSdkBridge, STATUS_OK, Collections.unmodifiableSet(values), onlineHostRules, userId);
+                    paymentSdkBridge, STATUS_OK, Collections.unmodifiableSet(values), onlineHostRules, userId,
+                    autonomousEnabled, onlyFrozen, browserFallback, onlineUpdatesEnabled, onlineRevision, onlineSha256, configFingerprint);
         }
 
         private static Snapshot unavailable(String status) {
-            return new Snapshot(false, false, false, false, false, false, status, Collections.emptySet(), new String[0], -1);
+            return new Snapshot(false, false, false, false, false, false, status, Collections.emptySet(), new String[0], -1,
+                    false, true, true, true, 0, "", "");
         }
     }
 }

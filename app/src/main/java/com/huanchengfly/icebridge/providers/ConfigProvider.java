@@ -26,6 +26,9 @@ import com.huanchengfly.icebridge.SystemServerConfigContract;
 import com.huanchengfly.icebridge.automation.LinkAutomationConfig;
 import com.huanchengfly.icebridge.automation.RuleConfigRepository;
 import com.huanchengfly.icebridge.automation.LinkRuleEntry;
+import com.huanchengfly.icebridge.automation.OnlineLinkRuleRepository;
+import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
+import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 import com.huanchengfly.icebridge.databases.AppConfig;
 
 import org.litepal.LitePal;
@@ -67,7 +70,24 @@ public class ConfigProvider extends ContentProvider {
     }
 
     private void notifyChange() {
+        invalidateRuntimeConfirmation();
         SystemServerConfigContract.notifyChanged(getContext());
+    }
+
+    private SharedPreferences runtimeStatus() {
+        return getContext().getSharedPreferences(SystemServerConfigContract.RUNTIME_STATUS_PREFS, Context.MODE_PRIVATE);
+    }
+
+    private void invalidateRuntimeConfirmation() {
+        if (getContext() == null) return;
+        SharedPreferences status = runtimeStatus();
+        if (status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false)
+                || !status.getString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, "").isEmpty()) {
+            status.edit().putBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false)
+                    .putBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, false)
+                    .putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, "")
+                    .putString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, "配置已变化，等待系统重新确认").apply();
+        }
     }
 
     @Override
@@ -108,9 +128,16 @@ public class ConfigProvider extends ContentProvider {
     @Override
     public Bundle call(@NonNull String method, @Nullable String arg, @Nullable Bundle extras) {
         enforceSystemServerCaller();
+        if (SystemServerConfigContract.METHOD_REPORT_RUNTIME_STATUS.equals(method)) {
+            return reportRuntimeStatus(extras);
+        }
         if (!SystemServerConfigContract.METHOD_GET_SNAPSHOT.equals(method)) {
             return null;
         }
+        return buildSnapshot();
+    }
+
+    private Bundle buildSnapshot() {
         Bundle snapshot = new Bundle();
         snapshot.putInt(SystemServerConfigContract.KEY_SCHEMA_VERSION, SystemServerConfigContract.SCHEMA_VERSION);
         snapshot.putInt(SystemServerConfigContract.KEY_USER_ID, SystemServerConfigContract.currentUserId());
@@ -124,6 +151,26 @@ public class ConfigProvider extends ContentProvider {
                     configValues.put(config.getKey(), config.getValue());
                 }
             }
+            SharedPreferences preferences = getContext().getApplicationContext()
+                    .getSharedPreferences(LinkAutomationConfig.PREFS, Context.MODE_PRIVATE);
+            boolean autonomous = preferences.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false);
+            snapshot.putBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, autonomous);
+            snapshot.putBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN,
+                    preferences.getBoolean(LinkAutomationConfig.KEY_ONLY_FROZEN, true));
+            snapshot.putBoolean(SystemServerConfigContract.KEY_BROWSER_FALLBACK,
+                    preferences.getBoolean(LinkAutomationConfig.KEY_BROWSER_FALLBACK, true));
+            snapshot.putBoolean(SystemServerConfigContract.KEY_ONLINE_UPDATES, OnlineLinkRuleRepository.isEnabled(getContext()));
+            OnlineLinkRuleRepository.AcceptedMetadata onlineMetadata = null;
+            try { onlineMetadata = OnlineLinkRuleRepository.getAcceptedMetadata(getContext()); }
+            catch (IllegalStateException invalidMetadata) {
+                if (autonomous) throw invalidMetadata;
+                // Broken online metadata must never prevent an explicit opt-out from reaching system_server.
+                Log.w(TAG, "Online metadata unavailable while independent mode is disabled");
+            }
+            long onlineRevision = onlineMetadata == null ? 0 : onlineMetadata.highestRevision;
+            String onlineSha256 = onlineMetadata == null ? "" : onlineMetadata.highestSha256;
+            snapshot.putLong(SystemServerConfigContract.KEY_ONLINE_REVISION, onlineRevision);
+            snapshot.putString(SystemServerConfigContract.KEY_ONLINE_SHA256, onlineSha256);
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_XHS_RECOVERY,
                     configEnabled(configValues, SystemServerConfigContract.KEY_XHS_RECOVERY, false)
@@ -145,15 +192,43 @@ public class ConfigProvider extends ContentProvider {
             );
             snapshot.putBoolean(
                     SystemServerConfigContract.KEY_CLIPBOARD_AUTO_OPEN,
-                    getContext().getApplicationContext()
-                            .getSharedPreferences(LinkAutomationConfig.PREFS, Context.MODE_PRIVATE)
-                            .getBoolean(LinkAutomationConfig.KEY_CLIPBOARD, false)
+                    preferences.getBoolean(LinkAutomationConfig.KEY_CLIPBOARD, false)
             );
             snapshot.putStringArray(
                     SystemServerConfigContract.KEY_FROZEN_PACKAGES,
-                    queryFrozenPackages().toArray(new String[0])
+                    autonomous ? new String[0] : queryFrozenPackages().toArray(new String[0])
             );
-            snapshot.putStringArray(SystemServerConfigContract.KEY_ONLINE_HOST_RULES, RuleConfigRepository.systemServerEntries(getContext()));
+            // Independent operation must retain rules for hidden or later-installed targets.
+            // system_server checks actual package state for each request rather than trusting this list.
+            String[] rules = autonomous ? ScopedRuleResolver.encode(RuleConfigRepository.effectiveRuleEntries(getContext()))
+                    : RuleConfigRepository.systemServerEntries(getContext());
+            if (onlineMetadata != null) {
+                OnlineLinkRuleRepository.AcceptedMetadata latestMetadata = OnlineLinkRuleRepository.getAcceptedMetadata(getContext());
+                if (latestMetadata.highestRevision != onlineRevision || !latestMetadata.highestSha256.equals(onlineSha256)) {
+                    throw new IllegalStateException("Online rules changed during snapshot");
+                }
+            }
+            snapshot.putStringArray(SystemServerConfigContract.KEY_ONLINE_HOST_RULES, rules);
+            SystemRuntimeConfig.State baseline = new SystemRuntimeConfig.State(SystemServerConfigContract.SCHEMA_VERSION,
+                    SystemServerConfigContract.currentUserId(), 0, autonomous,
+                    snapshot.getBoolean(SystemServerConfigContract.KEY_XHS_RECOVERY),
+                    snapshot.getBoolean(SystemServerConfigContract.KEY_AUTO_OPEN_LINKS),
+                    snapshot.getBoolean(SystemServerConfigContract.KEY_NATIVE_LINK_CAPTURE),
+                    snapshot.getBoolean(SystemServerConfigContract.KEY_CLIPBOARD_AUTO_OPEN),
+                    snapshot.getBoolean(SystemServerConfigContract.KEY_PAYMENT_SDK_BRIDGE),
+                    snapshot.getBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN),
+                    snapshot.getBoolean(SystemServerConfigContract.KEY_BROWSER_FALLBACK),
+                    snapshot.getBoolean(SystemServerConfigContract.KEY_ONLINE_UPDATES), rules,
+                    new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0));
+            String fingerprint = SystemRuntimeConfig.fingerprint(baseline);
+            snapshot.putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, fingerprint);
+            SharedPreferences status = runtimeStatus();
+            if (!fingerprint.equals(status.getString(SystemServerConfigContract.KEY_RUNTIME_EXPECTED_FINGERPRINT, ""))) {
+                status.edit().putString(SystemServerConfigContract.KEY_RUNTIME_EXPECTED_FINGERPRINT, fingerprint)
+                        .putBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false)
+                        .putBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, false)
+                        .putString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, "等待系统保存并确认当前配置").apply();
+            }
             snapshot.putString(SystemServerConfigContract.KEY_SNAPSHOT_STATUS, SystemServerConfigContract.STATUS_OK);
         } catch (Throwable error) {
             String reason = error.getClass().getSimpleName();
@@ -162,6 +237,58 @@ public class ConfigProvider extends ContentProvider {
             snapshot.putString(SystemServerConfigContract.KEY_SNAPSHOT_ERROR, reason);
         }
         return snapshot;
+    }
+
+    /** An acknowledgement is useful only for the exact current configuration and user. */
+    private Bundle reportRuntimeStatus(@Nullable Bundle extras) {
+        Bundle reply = new Bundle();
+        if (extras == null) throw new IllegalArgumentException("Missing runtime status");
+        int userId = extras.getInt(SystemServerConfigContract.KEY_USER_ID, -1);
+        int schema = extras.getInt(SystemServerConfigContract.KEY_SCHEMA_VERSION, -1);
+        String fingerprint = extras.getString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, "");
+        long revision = extras.getLong(SystemServerConfigContract.KEY_RUNTIME_REVISION, 0);
+        String message = extras.getString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, "");
+        boolean ready = extras.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false);
+        boolean persistedAck = extras.getBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, false);
+        ConfigProviderRuntimeStatus.validate(userId, SystemServerConfigContract.currentUserId(), schema,
+                SystemServerConfigContract.SCHEMA_VERSION, fingerprint, revision, message);
+        Bundle current = buildSnapshot();
+        boolean matches = SystemServerConfigContract.STATUS_OK.equals(current.getString(SystemServerConfigContract.KEY_SNAPSHOT_STATUS))
+                && fingerprint.equals(current.getString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT));
+        if (!matches) {
+            invalidateRuntimeConfirmation();
+            reply.putString(SystemServerConfigContract.KEY_SNAPSHOT_STATUS, "stale-config");
+            reply.putBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false);
+            return reply;
+        }
+        boolean confirmed = ready && persistedAck && current.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false);
+        if (confirmed && revision < current.getLong(SystemServerConfigContract.KEY_ONLINE_REVISION, 0)) {
+            throw new IllegalArgumentException("Runtime revision is older than current rules");
+        }
+        int bootCount = android.provider.Settings.Global.getInt(getContext().getContentResolver(), "boot_count", -1);
+        SharedPreferences status = runtimeStatus();
+        // Separate preferences and sibling URI keep status acknowledgements out of config observers.
+        boolean changed = status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false) != confirmed
+                || status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, false) != persistedAck
+                || !fingerprint.equals(status.getString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, ""))
+                || revision != status.getLong(SystemServerConfigContract.KEY_RUNTIME_REVISION, 0)
+                || bootCount != status.getInt(SystemServerConfigContract.KEY_RUNTIME_BOOT_COUNT, -1)
+                || !message.equals(status.getString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, ""));
+        if (changed) {
+            boolean saved = status.edit().putBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, confirmed)
+                    .putBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, persistedAck)
+                    .putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, fingerprint)
+                    .putLong(SystemServerConfigContract.KEY_RUNTIME_REVISION, revision)
+                    .putString(SystemServerConfigContract.KEY_RUNTIME_MESSAGE, message)
+                    .putInt(SystemServerConfigContract.KEY_RUNTIME_BOOT_COUNT, bootCount)
+                    .putLong(SystemServerConfigContract.KEY_RUNTIME_STATUS_UPDATED_AT, System.currentTimeMillis()).commit();
+            if (!saved) throw new IllegalStateException("Runtime status persistence failed");
+            getContext().getContentResolver().notifyChange(Uri.parse("content://" + AUTHORITY + "/runtime-status"), null);
+        }
+        reply.putString(SystemServerConfigContract.KEY_SNAPSHOT_STATUS, SystemServerConfigContract.STATUS_OK);
+        reply.putBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, confirmed);
+        reply.putBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, persistedAck);
+        return reply;
     }
 
     /**

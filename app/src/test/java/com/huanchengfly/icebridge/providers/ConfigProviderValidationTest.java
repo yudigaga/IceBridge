@@ -20,6 +20,7 @@ public class ConfigProviderValidationTest {
         values.put("enhance_mode_enabled", "4");
         values.put("xhs_resolve_recovery", "5");
         values.put("payment_sdk_bridge", "6");
+        values.put("autonomous_runtime_enabled", true);
         values.put("config", "{\"version\":1}");
 
         Map<String, String> sanitized = ConfigProviderValueValidator.sanitizeEntries(values.entrySet());
@@ -30,6 +31,7 @@ public class ConfigProviderValidationTest {
         assertEquals("4", sanitized.get("enhance_mode_enabled"));
         assertEquals("5", sanitized.get("xhs_resolve_recovery"));
         assertEquals("6", sanitized.get("payment_sdk_bridge"));
+        assertEquals("1", sanitized.get("autonomous_runtime_enabled"));
         assertEquals("{\"version\":1}", sanitized.get("config"));
     }
 
