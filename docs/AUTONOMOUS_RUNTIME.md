@@ -2,7 +2,7 @@
 
 0.0.82 增加可选的系统独立运行模式。IceBridge 被 IceBox 禁用或隐藏后，已注入 `system_server` 的模块使用系统保存的配置处理链接、剪贴板、支付预解冻和在线规则更新，整个处理过程不需要解冻或启动 IceBridge 本体。
 
-推荐使用 0.0.84 或更新版本。0.0.83 修复普通微信／QQ 跳转的来源令牌误判；0.0.84 增加系统侧居中中转进度卡片，沿用同步主题并等待目标窗口出现后收起。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)和[卡片及计时](TRANSIT_PROGRESS.md)说明了具体行为。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
+推荐使用 0.0.85 或更新版本。0.0.83 修复普通微信／QQ 跳转的来源令牌误判；0.0.84 增加系统侧居中中转进度卡片，0.0.85 改为来源图标经流线箭头指向目标图标，沿用同步主题并等待目标窗口出现后收起。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)和[卡片及计时](TRANSIT_PROGRESS.md)说明了具体行为。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
 
 当前只接收用户 0 的配置。工作资料和其他用户不会继承该配置；目标被挂起（suspended）、卸载或状态无法确认时不解冻。实际 ROM 的系统接口、SELinux 和冻结后重启注入仍需单独验收。
 
@@ -30,7 +30,7 @@
 | --- | --- |
 | 同步配置 | 本体可用时，由 SYSTEM_UID 访问受限 ConfigProvider；传递完整来源规则和在线版本元数据，不传大块 raw 数据 |
 | 保存与恢复 | 系统工作线程写 `/data/system/icebridge/user-0.json`，目录 0700、文件 0600、属主 system；原子写入、已知有效备份和独立撤销标记 |
-| HTTP 链接 | 观察微信／QQ 内置浏览器或 ACTION_VIEW HTTP 请求；原请求继续执行，系统工作线程按来源和域名选择目标并打开 |
+| HTTP 链接 | 已识别的微信／QQ 普通 WebView 点击在确认可路由后拦截原页面，再由系统工作线程打开目标；不支持的请求保留原流程。直接 ACTION_VIEW 请求继续由原链路优先处理 |
 | 明确目标和支付 | 在已核实的 ATMS 公共 Binder 入口、尚未持有启动锁时修复目标包状态，然后执行原请求；不改变 SDK caller、resultTo、签名参数和返回码 |
 | 剪贴板 | Hook 只复制有界文本；系统工作线程仅匹配通配来源规则，解冻并打开目标；已选目标实际失败且开启回退时才尝试明确浏览器 |
 | 在线规则 | 单独的有界网络线程使用自有 manifest／快照，核验格式、哈希和版本后原子替换在线集合；保留手动规则 |
@@ -60,9 +60,9 @@
 ```powershell
 ./tools/autonomous-fixture/build.ps1 -SdkRoot $env:ANDROID_HOME -JdkRoot $env:JAVA_HOME
 adb -s emulator-5556 root
-adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.84-debug.apk
+adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.85-debug.apk
 adb -s emulator-5556 install -r tools/autonomous-fixture/build/icebridge-autonomous-fixture.apk
-adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.84-debug.apk /data/local/tmp/icebridge-autonomous.apk
+adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.85-debug.apk /data/local/tmp/icebridge-autonomous.apk
 adb -s emulator-5556 shell 'su 1000 sh -c "CLASSPATH=/data/local/tmp/icebridge-autonomous.apk app_process /system/bin com.huanchengfly.icebridge.android16.AutonomousRuntimeHarness save"'
 adb -s emulator-5556 shell pm disable-user --user 0 io.github.yudigaga.icebridge
 adb -s emulator-5556 shell pm hide --user 0 io.github.yudigaga.icebridge

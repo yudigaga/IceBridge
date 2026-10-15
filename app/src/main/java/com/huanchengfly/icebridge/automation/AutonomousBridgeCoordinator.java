@@ -159,6 +159,17 @@ public final class AutonomousBridgeCoordinator<P> {
         }
     }
 
+    /** An advisory selection only; execute must revalidate live state before mutation or launch. */
+    public static final class Plan {
+        public final String targetPackage;
+        public final String conversion;
+
+        private Plan(String targetPackage, String conversion) {
+            this.targetPackage = targetPackage;
+            this.conversion = conversion;
+        }
+    }
+
     private static final int MAX_DEDUPLICATION_ENTRIES = 256;
     private static final long DEDUPLICATION_MILLIS = 1_500L;
     private final String protectedPackage;
@@ -180,6 +191,30 @@ public final class AutonomousBridgeCoordinator<P> {
         this.launcher = Objects.requireNonNull(launcher, "launcher");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.observer = Objects.requireNonNull(observer, "observer");
+    }
+
+    /**
+     * Read-only preflight outside ActivityTaskManager locks. It neither changes package state nor
+     * launches, replays, reports progress, or reads/writes worker-owned deduplication state.
+     */
+    public Plan prepare(Request<P> request, List<LinkRuleEntry> rules) {
+        if (request == null || request.kind != Kind.WEB_RULE || request.userId < 0 || !request.autoOpen) {
+            return null;
+        }
+        try {
+            Selection selected = select(request, rules);
+            if (selected.target == null || protectedPackage.equals(selected.target)) return null;
+            State state = selected.state;
+            if (state.isRecoverable()) {
+                Capabilities capability = packages.capabilities();
+                if (capability == null || (state.isDisabled() && !capability.enableDisabled)
+                        || (state.hidden && !capability.unhide)) return null;
+            } else if (request.onlyFrozen || !state.isLaunchable()) return null;
+            return new Plan(selected.target, selected.conversion);
+        } catch (Throwable ignored) {
+            // An uncertain preflight leaves the original request with Android.
+            return null;
+        }
     }
 
     /** Run only on the serial system worker, outside ActivityTaskManager/clipboard locks. */

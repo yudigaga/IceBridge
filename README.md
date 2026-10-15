@@ -7,7 +7,7 @@ IceBridge is an Android LSPosed module that restores a frozen app before the sys
 The automatic-link path is designed for the following flow:
 
 ```text
-WeChat / QQ built-in browser activity -> system-side IceBridge observation extracts an HTTPS URL
+WeChat / QQ built-in browser activity request -> system-side IceBridge extracts an HTTPS URL
 -> IceBridge identifies a supported target package
 -> only if that package is frozen, IceBridge restores it
 -> IceBridge opens the original URL in that target app
@@ -23,7 +23,9 @@ In **Bridge and automation**, enable **Run independently after freezing IceBridg
 
 Use 0.0.83 or later: it fixes ordinary WeChat/QQ Activity starts being mistaken for result requests. After upgrading, restart the device to load the new system module; see the [diagnosis and regression](docs/FROZEN_CAPTURE_DIAGNOSIS.md).
 
-Version 0.0.84 adds a centered native progress card for independent routing, including while IceBridge is frozen. It follows the synchronized theme, shows thawing/opening, and closes on the target window becoming ready. It adds no fixed launch delay; [progress and timing](docs/TRANSIT_PROGRESS.md) distinguishes module work from target-app cold starts.
+Version 0.0.85 shows the source and destination app icons in the centered native progress card, with a moving stream following the directed route. The card works while IceBridge is frozen, follows the synchronized theme, shows thawing/opening, and closes on the target window becoming ready. It adds no fixed launch delay; [progress and timing](docs/TRANSIT_PROGRESS.md) distinguishes module work from target-app cold starts.
+
+For supported ordinary WeChat/QQ clicks, independent mode now takes over the original WebView launch after checking the route, so it opens only the target. If takeover fails, it attempts the original source request once. Payments, result requests and unsupported cases preserve their original flow.
 
 This mode currently supports Android user 0 and disabled/hidden packages. Keep the LSPosed module and `system` scope enabled. After changing rules or disabling the mode, wait for a fresh system acknowledgement before freezing the app again. Installation, ROM restrictions, actual framework injection after reboot and payment callbacks require device verification; see [setup and validation boundaries](docs/AUTONOMOUS_RUNTIME.md).
 

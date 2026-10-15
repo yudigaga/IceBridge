@@ -6,6 +6,8 @@ Enable the IceBridge module with the `system` LSPosed scope, select and authoriz
 
 The default path observes Activity requests in `ActivityStartInterceptor` and `ActivityStarter`. It recognizes the WeChat `MMWebViewUI` and QQ `QQBrowserActivity` requests without injecting into those apps. For a recognized frozen target, the hook replaces the request with IceBridge's foreground bridge Activity. The bridge restores the package and opens the destination; failure preserves the supported source flow. The Hook uses an in-memory configuration snapshot for routing and never downloads rules.
 
+When independent runtime is enabled, version 0.0.85 takes over supported ordinary WeChat/QQ clicks before their source WebView starts. It authenticates the source and prepares a unique route outside framework locks, cancels only the owned inner launch, and lets the outer framework cleanup finish before thawing/opening the target. Failure attempts the original source request once; unsupported requests keep the original behavior. This mode uses a native system progress card and never needs an IceBridge Activity. See [progress and takeover behavior](TRANSIT_PROGRESS.md).
+
 Payment SDK requests have a separate path that preserves the original Intent and callback chain. Do not treat them as ordinary HTTP redirects or rebuild their extras. Replay tokens and the handoff between the two Activity hooks prevent repeated interception of the same request.
 
 System observation cannot see every WebView navigation that stays within an existing Activity. Legacy receiver and optional WebView helpers in the source are not evidence that those paths are installed by the current default entry point.

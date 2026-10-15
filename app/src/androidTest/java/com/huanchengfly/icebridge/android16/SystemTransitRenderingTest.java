@@ -20,6 +20,7 @@ import androidx.test.runner.AndroidJUnit4;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.*;
@@ -27,6 +28,57 @@ import static org.junit.Assert.*;
 /** Uses an application token to verify the same native card without asking for overlay permission. */
 @RunWith(AndroidJUnit4.class)
 public class SystemTransitRenderingTest {
+    @Test public void flowShowsBothAppsAnimatesAndStopsAfterTargetDraw() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        TransitPreviewActivity activity = open(instrumentation, false);
+        AtomicReference<TransitFlowView> renderedFlow = new AtomicReference<>();
+        try {
+            assertCardText(instrumentation, activity, "正在解冻");
+            String expectedSourceLabel = activity.getPackageManager().getApplicationLabel(
+                    activity.getPackageManager().getApplicationInfo("com.android.settings", 0)).toString();
+            instrumentation.runOnMainSync(() -> {
+                TransitFlowView flow = findFlow(activity.card());
+                assertNotNull("The native card must contain the app-to-app flow", flow);
+                renderedFlow.set(flow);
+                assertFlowIdentity(flow);
+                assertEquals("The source label must come from installed package metadata",
+                        expectedSourceLabel, flow.sourceLabel());
+            });
+            TransitFlowView flow = renderedFlow.get();
+            awaitFlowFrames(instrumentation, flow);
+            instrumentation.runOnMainSync(() -> {
+                assertTrue("Visible progress must animate", flow.animationRunning());
+                activity.show(1, SystemTransitPresenter.Stage.OPENING, 0xff7e57c2, "light");
+                activity.submitted(1);
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> {
+                assertSame("Changing stage must reuse the existing app-to-app flow",
+                        flow, findFlow(activity.card()));
+                activity.targetDrawn(1);
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> {
+                assertNull("The card must close after the actual target draw", activity.card());
+                assertFalse("Removing the card must stop its frame loop", flow.animationRunning());
+            });
+        } finally { instrumentation.runOnMainSync(activity::finish); }
+    }
+
+    @Test public void unknownPackagesStillShowTwoUsableFallbackIcons() {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        TransitPreviewActivity activity = open(instrumentation, false,
+                "com.icebridge.preview.absent.source", "com.icebridge.preview.absent.target");
+        try {
+            assertCardText(instrumentation, activity, "正在解冻");
+            instrumentation.runOnMainSync(() -> {
+                TransitFlowView flow = findFlow(activity.card());
+                assertNotNull("Missing package metadata must not remove the flow", flow);
+                assertFlowIdentity(flow);
+            });
+        } finally { instrumentation.runOnMainSync(activity::finish); }
+    }
+
     @Test public void nativeCardShowsBothStagesAndWaitsForActualTargetDraw() {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         TransitPreviewActivity activity = open(instrumentation, false);
@@ -188,11 +240,71 @@ public class SystemTransitRenderingTest {
     }
 
     private TransitPreviewActivity open(Instrumentation instrumentation, boolean dark) {
+        return open(instrumentation, dark, null, null);
+    }
+
+    private TransitPreviewActivity open(Instrumentation instrumentation, boolean dark,
+                                        String sourcePackage, String targetPackage) {
         Intent intent = new Intent(instrumentation.getTargetContext(), TransitPreviewActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("preview_dark", dark);
+        if (sourcePackage != null) intent.putExtra("preview_source", sourcePackage);
+        if (targetPackage != null) intent.putExtra("preview_target", targetPackage);
         TransitPreviewActivity activity = (TransitPreviewActivity) instrumentation.startActivitySync(intent);
         instrumentation.waitForIdleSync();
         return activity;
+    }
+
+    private void assertFlowIdentity(TransitFlowView flow) {
+        assertTrue("The source must have an app icon or a usable fallback", flow.hasSourceIcon());
+        assertTrue("The target must have an app icon or a usable fallback", flow.hasTargetIcon());
+        assertNotNull(flow.sourceLabel());
+        assertNotNull(flow.targetLabel());
+        assertFalse("The source label must remain accessible", flow.sourceLabel().trim().isEmpty());
+        assertFalse("The target label must remain accessible", flow.targetLabel().trim().isEmpty());
+        CharSequence description = flow.getContentDescription();
+        assertNotNull("The visual flow must expose its direction to accessibility", description);
+        String spoken = description.toString();
+        int sourceIndex = spoken.indexOf(flow.sourceLabel());
+        int targetIndex = spoken.indexOf(flow.targetLabel(), sourceIndex + flow.sourceLabel().length());
+        assertTrue("Accessibility must identify the source app", sourceIndex >= 0);
+        assertTrue("Accessibility must identify the target after the source", targetIndex > sourceIndex);
+    }
+
+    private TransitFlowView findFlow(View view) {
+        if (view instanceof TransitFlowView) return (TransitFlowView) view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                TransitFlowView flow = findFlow(group.getChildAt(index));
+                if (flow != null) return flow;
+            }
+        }
+        return null;
+    }
+
+    private void awaitFlowFrames(Instrumentation instrumentation, TransitFlowView flow)
+            throws InterruptedException {
+        CountDownLatch advanced = new CountDownLatch(1);
+        AtomicInteger startingFrame = new AtomicInteger();
+        AtomicInteger latestFrame = new AtomicInteger();
+        Runnable check = new Runnable() {
+            @Override public void run() {
+                latestFrame.set(flow.renderedFrames());
+                if (latestFrame.get() >= startingFrame.get() + 2) advanced.countDown();
+                else if (flow.isAttachedToWindow()) flow.postOnAnimation(this);
+            }
+        };
+        instrumentation.runOnMainSync(() -> {
+            startingFrame.set(flow.renderedFrames());
+            flow.postOnAnimation(check);
+        });
+        try {
+            assertTrue("The flow must draw real animation frames; started at " + startingFrame.get(),
+                    advanced.await(5, TimeUnit.SECONDS));
+            assertTrue(latestFrame.get() >= startingFrame.get() + 2);
+        } finally {
+            instrumentation.runOnMainSync(() -> flow.removeCallbacks(check));
+        }
     }
 
     private void assertCardText(Instrumentation instrumentation, TransitPreviewActivity activity, String text) {

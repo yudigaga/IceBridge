@@ -1,5 +1,6 @@
 package com.huanchengfly.icebridge.android16;
 
+import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
@@ -10,6 +11,7 @@ import android.os.SystemClock;
 
 import com.huanchengfly.icebridge.SystemServerConfigContract;
 import com.huanchengfly.icebridge.automation.AutonomousBridgeCoordinator;
+import com.huanchengfly.icebridge.automation.OwnedLaunchTransaction;
 import com.huanchengfly.icebridge.automation.SystemOnlineRuleClient;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfigStore;
@@ -36,8 +38,11 @@ public final class SystemAutonomousRuntime {
     private final SystemLaunchPreflight preflight;
     private final SystemTransitPresenter transit;
     private final Handler transitEvents;
+    private final java.lang.reflect.Method uidImportance;
     private final AtomicLong nextTransitId = new AtomicLong();
     private final ConcurrentHashMap<Long, TransitTrace> transitTraces = new ConcurrentHashMap<>();
+    private final java.util.Set<Takeover> preparedTakeovers = java.util.Collections.newSetFromMap(
+            new java.util.IdentityHashMap<>());
     private TransitTrace workerTrace;
     private volatile boolean windowObservationReady;
     private final ExecutorService network = Executors.newSingleThreadExecutor(runnable -> {
@@ -61,6 +66,10 @@ public final class SystemAutonomousRuntime {
         this.worker = worker;
         this.logger = logger;
         this.decorator = decorator;
+        java.lang.reflect.Method importance;
+        try { importance = ActivityManager.class.getMethod("getUidImportance", Integer.TYPE); }
+        catch (ReflectiveOperationException unavailable) { importance = null; }
+        uidImportance = importance;
         transit = SystemTransitPresenter.create(context, this::safeLog, serverLoader);
         Handler uiEvents;
         try { uiEvents = (Handler) Class.forName("com.android.server.UiThread", true, serverLoader)
@@ -81,7 +90,7 @@ public final class SystemAutonomousRuntime {
                                 AutonomousBridgeCoordinator.Stage.OPENING);
                     }
                 },
-                        (event, user, target) -> logger.event(event + ": user=" + user + ", target=" + target)),
+                        (event, user, target) -> safeLog(event + ": user=" + user + ", target=" + target)),
                 SystemClock::elapsedRealtime, (request, target, stage) -> {
                     TransitTrace trace = workerTrace;
                     if (trace != null) reportStage(trace, target, stage);
@@ -158,7 +167,8 @@ public final class SystemAutonomousRuntime {
                 persisted = true;
                 configuration = incoming;
                 AutonomousBridgeCoordinator.Capabilities capability = packages.capabilities();
-                ready = hooksReady && capability.enableDisabled && capability.unhide
+                ready = hooksReady && (!snapshot.nativeLinkCapture || uidImportance != null)
+                        && capability.enableDisabled && capability.unhide
                         && packages.read(PROTECTED_PACKAGE, snapshot.userId).isKnown();
                 message = ready ? "配置已由系统持久保存，可冻结本体" : "配置已保存，但系统 Hook 或包管理能力不完整";
                 logger.event("autonomous synchronized: ready=" + ready + ", rules="
@@ -176,6 +186,147 @@ public final class SystemAutonomousRuntime {
     static SystemRuntimeConfig.State mergeProvider(SystemRuntimeConfig.State incoming,
                                                    SystemRuntimeConfig.State retained) throws IOException {
         return SystemOnlineRuleClient.mergeProvider(incoming, retained);
+    }
+
+    /** Opaque ownership of one ordinary source click; never a caller-controlled replay endpoint. */
+    public static final class Takeover {
+        private final SystemAutonomousRuntime owner;
+        private final AutonomousBridgeCoordinator.Request<Intent> request;
+        private final Intent original;
+        private final AutonomousBridgeCoordinator.Plan plan;
+        private final OwnedLaunchTransaction transaction = new OwnedLaunchTransaction();
+
+        private Takeover(SystemAutonomousRuntime owner,
+                         AutonomousBridgeCoordinator.Request<Intent> request, Intent original,
+                         AutonomousBridgeCoordinator.Plan plan) {
+            this.owner = owner;
+            this.request = request;
+            this.original = original;
+            this.plan = plan;
+        }
+    }
+
+    /** Read-only eligibility check, exclusively before framework launch locks are acquired. */
+    public Takeover prepareTakeover(AutonomousBridgeCoordinator.Request<Intent> request,
+                                   Intent original, int callingUid, String callingPackage) {
+        try {
+            if (request == null || original == null || request.userId != 0
+                    || request.kind != AutonomousBridgeCoordinator.Kind.WEB_RULE
+                    || request.explicitTarget != null || request.payload == null
+                    || callingUid < 10_000 || !request.sourcePackage.equals(callingPackage)
+                    || original.getSelector() != null || original.getClipData() != null
+                    || original.hasFileDescriptors()
+                    || (original.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION | Intent.FLAG_ACTIVITY_FORWARD_RESULT)) != 0) return null;
+            NativeActivityLinkCapture.CapturedLink source = NativeActivityLinkCapture.capture(original);
+            if (source == null || !request.sourcePackage.equals(source.sourcePackage)
+                    || request.payload.getData() == null
+                    || !source.url.equals(request.payload.getData().toString())) return null;
+            Uri originalData = original.getData();
+            if (originalData != null && ("content".equalsIgnoreCase(originalData.getScheme())
+                    || "file".equalsIgnoreCase(originalData.getScheme()))) return null;
+            SystemRuntimeConfig.State state = current(request.userId);
+            request = rebaseRequest(state, request);
+            if (request == null) return null;
+            long identity = Binder.clearCallingIdentity();
+            try {
+                int sourceUid = context.getPackageManager().getApplicationInfo(source.sourcePackage, 0).uid;
+                if (sourceUid != callingUid) return null;
+                ActivityManager activityManager = context.getSystemService(ActivityManager.class);
+                Object importance = activityManager == null || uidImportance == null ? null
+                        : uidImportance.invoke(activityManager, callingUid);
+                if (!(importance instanceof Integer) || (Integer) importance
+                        != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) return null;
+            } finally { Binder.restoreCallingIdentity(identity); }
+            AutonomousBridgeCoordinator.State own = packages.read(PROTECTED_PACKAGE, request.userId);
+            if (!own.isKnown() || !own.installed) return null;
+            AutonomousBridgeCoordinator.Plan plan = coordinator.prepare(request, state.scopedRules);
+            if (plan == null) return null;
+            // Validate the public target payload before suppressing its private source carrier.
+            SystemAutonomousLauncher.buildLaunchIntent(request, plan.targetPackage, plan.conversion,
+                    PROTECTED_PACKAGE);
+            Takeover takeover = new Takeover(this, request, new Intent(original), plan);
+            synchronized (preparedTakeovers) {
+                if (preparedTakeovers.size() >= 16) return null;
+                preparedTakeovers.add(takeover);
+            }
+            return takeover;
+        } catch (Throwable error) {
+            safeLog("autonomous takeover preparation skipped: " + error.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    /** The original framework request ran normally; releasing ownership must not replay it. */
+    public void cancelTakeover(Takeover takeover) {
+        if (owns(takeover) && takeover.transaction.cancel()) release(takeover);
+    }
+
+    /** Called only after the outer framework execution/finally has completed. */
+    public void executeTakeover(Takeover takeover, long observedAt, long queuedAt) {
+        if (!owns(takeover)) return;
+        OwnedLaunchTransaction.Outcome outcome = takeover.transaction.execute(
+                () -> routeTakeover(takeover, observedAt, queuedAt), () -> replayTakeover(takeover));
+        if (outcome != OwnedLaunchTransaction.Outcome.IGNORED) {
+            release(takeover);
+            safeLog("autonomous takeover: " + outcome + ", user=" + takeover.request.userId
+                    + ", target=" + takeover.plan.targetPackage);
+        }
+    }
+
+    /** The original was suppressed but could not be scheduled; restore it at most once. */
+    public void abandonTakeover(Takeover takeover) {
+        if (!owns(takeover)) return;
+        OwnedLaunchTransaction.Outcome outcome = takeover.transaction.abandon(() -> replayTakeover(takeover));
+        if (outcome != OwnedLaunchTransaction.Outcome.IGNORED) {
+            release(takeover);
+            safeLog("autonomous takeover abandoned: " + outcome);
+        }
+    }
+
+    private boolean owns(Takeover takeover) {
+        if (takeover == null || takeover.owner != this) return false;
+        synchronized (preparedTakeovers) { return preparedTakeovers.contains(takeover); }
+    }
+
+    private void release(Takeover takeover) {
+        synchronized (preparedTakeovers) { preparedTakeovers.remove(takeover); }
+    }
+
+    private boolean routeTakeover(Takeover takeover, long observedAt, long queuedAt) {
+        SystemRuntimeConfig.State state = current(takeover.request.userId);
+        AutonomousBridgeCoordinator.Request<Intent> request = rebaseRequest(state, takeover.request);
+        if (request == null) return false;
+        AutonomousBridgeCoordinator.State own = packages.read(PROTECTED_PACKAGE, request.userId);
+        if (!own.isKnown() || !own.installed) return false;
+        // A competing thaw after the claim must not turn an already suppressed click into a no-op.
+        request = new AutonomousBridgeCoordinator.Request<>(request.kind, request.userId,
+                request.sourcePackage, request.host, request.explicitTarget,
+                "takeover:" + takeover.plan.targetPackage + ":" + takeover.plan.conversion
+                        + ":" + request.fingerprint,
+                request.payload, false, true, false);
+        AutonomousBridgeCoordinator.Plan refreshed = coordinator.prepare(request, state.scopedRules);
+        if (refreshed == null || !takeover.plan.targetPackage.equals(refreshed.targetPackage)
+                || !takeover.plan.conversion.equals(refreshed.conversion)) return false;
+        AutonomousBridgeCoordinator.Result result = runRoute(request, state, observedAt, queuedAt);
+        return result.outcome == AutonomousBridgeCoordinator.Outcome.ROUTED
+                || result.outcome == AutonomousBridgeCoordinator.Outcome.DUPLICATE;
+    }
+
+    private boolean replayTakeover(Takeover takeover) {
+        try {
+            // Replay only to the authenticated source component, retaining its private extras there.
+            Intent original = new Intent(takeover.original).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            decorator.registerReplay(original, takeover.request.userId, takeover.request.sourcePackage);
+            SystemActivityLauncher.start(context, original, takeover.request.userId);
+            safeLog("autonomous takeover original restored: user=" + takeover.request.userId
+                    + ", source=" + takeover.request.sourcePackage);
+            return true;
+        } catch (Throwable error) {
+            safeLog("autonomous takeover original restore failed: " + error.getClass().getSimpleName());
+            return false;
+        }
     }
 
     public void execute(AutonomousBridgeCoordinator.Request<Intent> request) {
@@ -197,22 +348,7 @@ public final class SystemAutonomousRuntime {
             logger.event("autonomous request ignored: module-not-installed-or-state-unknown");
             return;
         }
-        TransitTrace trace = beginTrace(request.userId, state, observedAt, queuedAt);
-        workerTrace = trace;
-        AutonomousBridgeCoordinator.Result result;
-        try { result = coordinator.execute(request, state.scopedRules); }
-        finally { workerTrace = null; }
-        logger.event("autonomous transaction: " + result.outcome + ", reason=" + result.reason
-                + ", target=" + result.targetPackage + ", user=" + request.userId);
-        if (result.outcome == AutonomousBridgeCoordinator.Outcome.ROUTED) {
-            trace.acceptedAt = SystemClock.elapsedRealtime();
-            transit.onSubmitted(trace.id);
-            traceLog(trace, "submitted", trace.acceptedAt);
-        } else {
-            trace.done.set(true);
-            transit.finish(trace.id, result.reason);
-            traceLog(trace, "finished-" + result.reason, SystemClock.elapsedRealtime());
-        }
+        AutonomousBridgeCoordinator.Result result = runRoute(request, state, observedAt, queuedAt);
         // A copied URL has no foreground original request to preserve. Fall back only after an
         // actual selected-target failure; unmatched, installed/enabled and ambiguous cases stay quiet.
         if (state.browserFallback && request.fingerprint.startsWith("clipboard:")
@@ -220,7 +356,8 @@ public final class SystemAutonomousRuntime {
                 && result.targetPackage != null
                 && (result.reason.startsWith("thaw-") || result.reason.startsWith("launch-failed:"))
                 && request.payload != null && request.payload.getData() != null) {
-            TransitTrace fallback = beginTrace(request.userId, state, observedAt, SystemClock.elapsedRealtime());
+            TransitTrace fallback = beginTrace(request.userId, request.sourcePackage, state, observedAt,
+                    SystemClock.elapsedRealtime());
             workerTrace = fallback;
             boolean opened;
             try {
@@ -236,6 +373,27 @@ public final class SystemAutonomousRuntime {
             else { fallback.done.set(true); transit.finish(fallback.id, "browser-unavailable"); }
             logger.event("autonomous clipboard browser fallback: opened=" + opened);
         }
+    }
+
+    private AutonomousBridgeCoordinator.Result runRoute(AutonomousBridgeCoordinator.Request<Intent> request,
+            SystemRuntimeConfig.State state, long observedAt, long queuedAt) {
+        TransitTrace trace = beginTrace(request.userId, request.sourcePackage, state, observedAt, queuedAt);
+        workerTrace = trace;
+        AutonomousBridgeCoordinator.Result result;
+        try { result = coordinator.execute(request, state.scopedRules); }
+        finally { workerTrace = null; }
+        safeLog("autonomous transaction: " + result.outcome + ", reason=" + result.reason
+                + ", target=" + result.targetPackage + ", user=" + request.userId);
+        if (result.outcome == AutonomousBridgeCoordinator.Outcome.ROUTED) {
+            trace.acceptedAt = SystemClock.elapsedRealtime();
+            transit.onSubmitted(trace.id);
+            traceLog(trace, "submitted", trace.acceptedAt);
+        } else {
+            trace.done.set(true);
+            transit.finish(trace.id, result.reason);
+            traceLog(trace, "finished-" + result.reason, SystemClock.elapsedRealtime());
+        }
+        return result;
     }
 
     /** Called outside UI code by after-hooks; it never queries packages or waits for a handler. */
@@ -261,7 +419,8 @@ public final class SystemAutonomousRuntime {
         traceLog(trace, "window-ready", event.observedAt);
     }
 
-    private TransitTrace beginTrace(int user, SystemRuntimeConfig.State state, long observedAt, long queuedAt) {
+    private TransitTrace beginTrace(int user, String sourcePackage, SystemRuntimeConfig.State state,
+                                    long observedAt, long queuedAt) {
         long now = SystemClock.elapsedRealtime();
         transitTraces.entrySet().removeIf(entry -> now < entry.getValue().startedAt
                 || now - entry.getValue().startedAt > 20_000L);
@@ -269,7 +428,8 @@ public final class SystemAutonomousRuntime {
             Long oldest = java.util.Collections.min(transitTraces.keySet());
             transitTraces.remove(oldest);
         }
-        TransitTrace trace = new TransitTrace(nextTransitId.incrementAndGet(), user, state, observedAt, queuedAt, now);
+        TransitTrace trace = new TransitTrace(nextTransitId.incrementAndGet(), user, sourcePackage,
+                state, observedAt, queuedAt, now);
         transitTraces.put(trace.id, trace);
         traceLog(trace, "worker-start", now);
         return trace;
@@ -281,7 +441,7 @@ public final class SystemAutonomousRuntime {
         if (stage == AutonomousBridgeCoordinator.Stage.THAWING) trace.thawingAt = now;
         else trace.openingAt = now;
         if (windowObservationReady) {
-            transit.onStage(trace.id, trace.userId, target,
+            transit.onStage(trace.id, trace.userId, trace.sourcePackage, target,
                     stage == AutonomousBridgeCoordinator.Stage.THAWING
                             ? SystemTransitPresenter.Stage.THAWING : SystemTransitPresenter.Stage.OPENING,
                     trace.state.transitSeedColor, trace.state.transitAppearance);
@@ -303,12 +463,15 @@ public final class SystemAutonomousRuntime {
     private static final class TransitTrace implements TransitWindowCorrelation.Pending {
         final long id, observedAt, queuedAt, startedAt;
         final int userId;
+        final String sourcePackage;
         final SystemRuntimeConfig.State state;
         final AtomicBoolean done = new AtomicBoolean();
         volatile String targetPackage;
         volatile long thawingAt, openingAt, acceptedAt;
-        TransitTrace(long id, int userId, SystemRuntimeConfig.State state, long observedAt, long queuedAt, long startedAt) {
+        TransitTrace(long id, int userId, String sourcePackage, SystemRuntimeConfig.State state,
+                     long observedAt, long queuedAt, long startedAt) {
             this.id = id; this.userId = userId; this.state = state;
+            this.sourcePackage = sourcePackage;
             this.observedAt = observedAt; this.queuedAt = queuedAt; this.startedAt = startedAt;
         }
         @Override public long id() { return id; }

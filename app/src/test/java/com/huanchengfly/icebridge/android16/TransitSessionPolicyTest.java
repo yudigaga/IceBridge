@@ -7,6 +7,48 @@ public class TransitSessionPolicyTest {
     private static final String TARGET = "com.example.target";
     private final TransitSessionPolicy policy = new TransitSessionPolicy();
 
+    @Test public void sourceRemainsBoundToItsTransactionAcrossStagesAndSubmission() {
+        assertTrue(policy.stage(1, 0, "com.example.source", TARGET, TransitSessionPolicy.THAWING,
+                0xff2979ff, "light", 100));
+        assertEquals("com.example.source", policy.active().sourcePackage);
+        assertTrue(policy.stage(1, 0, "com.example.other", TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "light", 200));
+        assertEquals("com.example.source", policy.active().sourcePackage);
+        assertTrue(policy.submitted(1));
+        assertEquals("com.example.source", policy.active().sourcePackage);
+        assertTrue(policy.active().submitted);
+    }
+
+    @Test public void replacementUsesItsOwnSourceAndOldCallbacksCannotRestoreThePriorSource() {
+        assertTrue(policy.stage(1, 0, "com.example.first", TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "light", 100));
+        assertTrue(policy.stage(2, 0, "com.example.second", TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "light", 200));
+        assertFalse(policy.stage(1, 0, "com.example.first", TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "light", 300));
+        assertFalse(policy.submitted(1));
+        assertFalse(policy.finish(1));
+        assertEquals("com.example.second", policy.active().sourcePackage);
+    }
+
+    @Test public void unknownAndUnboundedSourcesUseTheGenericSource() {
+        String[] sources = {null, "", " ", "*", " * ", new String(new char[256]).replace('\0', 'x')};
+        for (int index = 0; index < sources.length; index++) {
+            assertTrue(policy.stage(index + 1, 0, sources[index], TARGET, TransitSessionPolicy.OPENING,
+                    0xff2979ff, "light", 100));
+            assertNull(policy.active().sourcePackage);
+        }
+    }
+
+    @Test public void legacyStageSignatureSupportsUnknownSourceAndKeepsAnExistingSource() {
+        begin(1, TransitSessionPolicy.THAWING, 100);
+        assertNull(policy.active().sourcePackage);
+        assertTrue(policy.stage(2, 0, "com.example.source", TARGET, TransitSessionPolicy.THAWING,
+                0xff2979ff, "light", 200));
+        begin(2, TransitSessionPolicy.OPENING, 300);
+        assertEquals("com.example.source", policy.active().sourcePackage);
+    }
+
     @Test public void acceptingLaunchDoesNotClaimThatTargetIsDisplayed() {
         begin(1, TransitSessionPolicy.OPENING, 100);
         assertTrue(policy.submitted(1));

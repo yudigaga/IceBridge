@@ -33,6 +33,7 @@ import com.huanchengfly.icebridge.automation.LinkRuleEntry;
 import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
 import com.huanchengfly.icebridge.automation.BoundedExpiringDeduplicator;
 import com.huanchengfly.icebridge.automation.SnapshotCachePolicy;
+import com.huanchengfly.icebridge.automation.ReplayRequestScope;
 import com.huanchengfly.icebridge.android16.PaymentSdkBridgeResolver;
 import com.huanchengfly.icebridge.android16.ResolvedLaunch;
 import com.huanchengfly.icebridge.android16.SystemServerPackageStateProbe;
@@ -41,6 +42,7 @@ import com.huanchengfly.icebridge.android16.SystemAutonomousCapture;
 import com.huanchengfly.icebridge.android16.SystemTargetWindowObserver;
 import com.huanchengfly.icebridge.android16.AtmsBinderSignatureResolver;
 import com.huanchengfly.icebridge.android16.SystemLaunchPreflight;
+import com.huanchengfly.icebridge.android16.ActivityStarterTakeoverPolicy;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 import com.huanchengfly.icebridge.automation.AutonomousBridgeCoordinator;
 
@@ -124,6 +126,8 @@ public final class IceBridgeModule extends XposedModule {
     private final Runnable configurationChanged = () -> refreshRecoveryConfiguration("notification", true);
     private volatile Field activityStarterRequestField;
     private volatile Field activityStarterIntentField;
+    private volatile TakeoverHook takeoverHook;
+    private final ThreadLocal<TakeoverInvocation> activeTakeover = new ThreadLocal<>();
     private final ConcurrentHashMap<String, Long> pendingRecoveries = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> replayTokens = new ConcurrentHashMap<>();
     private final BoundedExpiringDeduplicator clipboardEvents =
@@ -331,61 +335,319 @@ public final class IceBridgeModule extends XposedModule {
             }
             activityStarterRequestField = requestField;
             activityStarterIntentField = intentField;
+            installAutonomousTakeoverHook(starterClass, requestField.getType());
             hook(resolved.method)
                     .setId("icebridge:global-auto-open-activity-starter")
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
                     .intercept(chain -> {
-                        AutonomousBridgeCoordinator.Request<Intent> autonomous = null;
-                        long autonomousObservedAt = 0;
-                        try {
-                            Object request = activityStarterRequestField.get(chain.getThisObject());
-                            Intent original = request == null ? null
-                                    : (Intent) activityStarterIntentField.get(request);
-                            if (isCarrierAlipaySdkActivity(original)) {
-                                log(4, TAG, "carrier alipay sdk activity observed: "
-                                        + describeIntent(original));
+                        try (ReplayRequestScope ignored = ReplayRequestScope.open()) {
+                            AutonomousBridgeCoordinator.Request<Intent> autonomous = null;
+                            TakeoverInvocation takeover = null;
+                            long autonomousObservedAt = 0;
+                            try {
+                                Object request = activityStarterRequestField.get(chain.getThisObject());
+                                Intent original = request == null ? null
+                                        : (Intent) activityStarterIntentField.get(request);
+                                if (isCarrierAlipaySdkActivity(original)) {
+                                    log(4, TAG, "carrier alipay sdk activity observed: "
+                                            + describeIntent(original));
+                                }
+                                int userId = userIdFromActivityStarterRequest(request);
+                                if (thawPaymentPackageAndPassThrough(original, userId)) {
+                                    // Preserve the original ActivityStarter request and caller chain for
+                                    // Alipay's signed SDK callback. Only package state is repaired.
+                                    return chain.proceed();
+                                }
+                                if (autonomousConfiguration(userId) != null) {
+                                    autonomousObservedAt = SystemClock.elapsedRealtime();
+                                    autonomous = captureAutonomousRequest(original, userId, request);
+                                    if (autonomous != null && NativeActivityLinkCapture.isSupportedActivity(original)
+                                            && autonomous.kind == AutonomousBridgeCoordinator.Kind.WEB_RULE
+                                            && autonomous.explicitTarget == null) {
+                                        // A known source WebView is either owned before it starts or
+                                        // left entirely to Android. Never launch both paths afterward.
+                                        takeover = prepareTakeover(chain.getThisObject(), request,
+                                                original, autonomous);
+                                        autonomous = null;
+                                    }
+                                } else {
+                                    // The normal mode keeps its existing foreground app trampoline.
+                                    Intent bridge = buildNativeAutoOpenBridge(original, userId, "activity_starter");
+                                    if (bridge == null) bridge = consumeNativeBridgeReplacement(original, userId);
+                                    if (bridge != null) {
+                                        activityStarterIntentField.set(request, new Intent(bridge));
+                                        log(4, TAG, "native link redirected via ActivityStarter: target="
+                                                + bridge.getStringExtra(EXTRA_TARGET_PACKAGE));
+                                    }
+                                }
+                            } catch (Throwable error) {
+                                log(5, TAG, "global auto-open fallback skipped: "
+                                        + error.getClass().getSimpleName());
                             }
-                            int userId = userIdFromActivityStarterRequest(request);
-                            if (thawPaymentPackageAndPassThrough(original, userId)) {
-                                // Preserve the original ActivityStarter request and caller chain for
-                                // Alipay's signed SDK callback. Only package state is repaired.
-                                return chain.proceed();
-                            }
-                            if (autonomousConfiguration(userId) != null) {
-                                autonomousObservedAt = SystemClock.elapsedRealtime();
-                                autonomous = captureAutonomousRequest(original, userId, request);
-                            } else {
-                                // The normal mode keeps its existing foreground app trampoline.
-                                Intent bridge = buildNativeAutoOpenBridge(original, userId, "activity_starter");
-                                if (bridge == null) bridge = consumeNativeBridgeReplacement(original, userId);
-                                if (bridge != null) {
-                                    activityStarterIntentField.set(request, new Intent(bridge));
-                                    log(4, TAG, "native link redirected via ActivityStarter: target="
-                                            + bridge.getStringExtra(EXTRA_TARGET_PACKAGE));
+                            // Always execute the framework's own finally/cleanup. Only a failed,
+                            // result-free direct launch can be retried with the system's identity.
+                            Object result;
+                            TakeoverInvocation previous = activeTakeover.get();
+                            if (takeover != null) activeTakeover.set(takeover);
+                            try {
+                                result = chain.proceed();
+                            } finally {
+                                if (takeover != null) {
+                                    if (previous == null) activeTakeover.remove();
+                                    else activeTakeover.set(previous);
+                                    completeTakeover(takeover, autonomousObservedAt);
                                 }
                             }
-                        } catch (Throwable error) {
-                            log(5, TAG, "global auto-open fallback skipped: "
-                                    + error.getClass().getSimpleName());
-                        }
-                        // Always execute the framework's own finally/cleanup. Only a failed,
-                        // result-free direct launch can be retried with the system's identity.
-                        Object result = chain.proceed();
-                        if (autonomous != null) {
-                            boolean web = autonomous.kind == AutonomousBridgeCoordinator.Kind.WEB_RULE
-                                    && autonomous.explicitTarget == null;
-                            boolean missing = result instanceof Integer
-                                    && ((Integer) result == -1 || (Integer) result == -2);
-                            if (web || missing) {
-                                enqueueAutonomous(autonomous, autonomousObservedAt);
+                            if (autonomous != null) {
+                                boolean missing = result instanceof Integer
+                                        && ((Integer) result == -1 || (Integer) result == -2);
+                                // Unowned HTTP requests keep their original resolver/browser flow.
+                                // Only a failed direct launch needs an independent recovery retry.
+                                if (missing && (autonomous.kind != AutonomousBridgeCoordinator.Kind.WEB_RULE
+                                        || autonomous.explicitTarget != null)) {
+                                    enqueueAutonomous(autonomous, autonomousObservedAt);
+                                }
                             }
+                            return result;
                         }
-                        return result;
                     });
             log(4, TAG, "global auto-open fallback hook installed: " + resolved.description);
             activityInterceptionReady = true;
         } catch (Throwable error) {
             logError("global auto-open fallback hook installation failed", error);
+        }
+    }
+
+    /** Cancel only the reserved inner launch; the outer execute must perform all framework cleanup. */
+    private void installAutonomousTakeoverHook(Class<?> starterClass, Class<?> requestClass) {
+        try {
+            TakeoverHook state = new TakeoverHook(starterClass, requestClass);
+            Method executeRequest = starterClass.getDeclaredMethod("executeRequest", requestClass);
+            if (executeRequest.getReturnType() != Integer.TYPE) {
+                throw new NoSuchMethodException("executeRequest-return-type");
+            }
+            executeRequest.setAccessible(true);
+            Method externalResult = starterClass.getDeclaredMethod("getExternalResult", Integer.TYPE);
+            externalResult.setAccessible(true);
+            if (!java.lang.reflect.Modifier.isStatic(externalResult.getModifiers())
+                    || !Integer.valueOf(0).equals(externalResult.invoke(null,
+                    ActivityStarterTakeoverPolicy.START_ABORTED))) {
+                throw new IllegalStateException("framework-abort-mapping-unsupported");
+            }
+            hook(executeRequest)
+                    .setId("icebridge:autonomous-owned-web-launch")
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE)
+                    .intercept(chain -> {
+                        TakeoverInvocation invocation = activeTakeover.get();
+                        Object starter = chain.getThisObject();
+                        Object request = chain.getArg(0);
+                        if (invocation == null || !invocation.frame.owns(starter, request)) {
+                            return chain.proceed();
+                        }
+                        try {
+                            String reason = takeoverGuard(state, starter, request,
+                                    invocation.captured, invocation.callingUid, true);
+                            if (reason != null) {
+                                takeoverLog(4, "autonomous takeover preserved original: " + reason);
+                            } else {
+                                // START_ABORTED is a native early-cancel result. START_SUCCESS here
+                                // would make Android 16 dereference a nonexistent launched record.
+                                state.lastReason.set(starter, state.reason.get(request));
+                                state.lastTime.setLong(starter, System.currentTimeMillis());
+                                state.lastRecord.set(starter, null);
+                                state.lastResult.setInt(starter, ActivityStarterTakeoverPolicy.START_ABORTED);
+                                invocation.frame.suppress(starter, request);
+                            }
+                        } catch (Throwable error) {
+                            takeoverLog(5, "autonomous takeover preserved original: guard-"
+                                    + error.getClass().getSimpleName());
+                        }
+                        if (!invocation.frame.wasSuppressed()) return chain.proceed();
+                        // Once committed, never fall through to the source launch. Aborting
+                        // options notifies animation callbacks and must occur at most once.
+                        try {
+                            Object options = state.options.get(request);
+                            if (options != null) state.abortOptions.invoke(null, options);
+                        } catch (Throwable error) {
+                            takeoverLog(5, "autonomous takeover options abort failed: "
+                                    + error.getClass().getSimpleName());
+                        }
+                        return ActivityStarterTakeoverPolicy.START_ABORTED;
+                    });
+            takeoverHook = state;
+            takeoverLog(4, "autonomous owned WebView takeover installed");
+        } catch (Throwable error) {
+            takeoverHook = null;
+            takeoverLog(5, "autonomous takeover unavailable; preserving original: "
+                    + error.getClass().getSimpleName());
+        }
+    }
+
+    private TakeoverInvocation prepareTakeover(Object starter, Object frameworkRequest, Intent original,
+            AutonomousBridgeCoordinator.Request<Intent> captured) {
+        TakeoverHook state = takeoverHook;
+        SystemAutonomousRuntime runtime = autonomousRuntime;
+        if (state == null || runtime == null || systemHandler == null) {
+            takeoverLog(4, "autonomous takeover preserved original: runtime-or-hook-unavailable");
+            return null;
+        }
+        SystemAutonomousRuntime.Takeover reserved = null;
+        try {
+            int callerUid = Binder.getCallingUid();
+            if (!SystemLaunchPreflight.isOutsideGlobalLock(state.service.get(starter),
+                    Binder.getCallingPid(), android.os.Process.myPid())) {
+                takeoverLog(4, "autonomous takeover preserved original: local-or-locked-call");
+                return null;
+            }
+            String reason = takeoverGuard(state, starter, frameworkRequest, captured, callerUid, false);
+            if (reason != null) {
+                takeoverLog(4, "autonomous takeover preserved original: " + reason);
+                return null;
+            }
+            String callingPackage = (String) state.callingPackage.get(frameworkRequest);
+            reserved = runtime.prepareTakeover(captured, original, callerUid, callingPackage);
+            if (reserved == null) {
+                takeoverLog(4, "autonomous takeover preserved original: route-not-reserved");
+                return null;
+            }
+            return new TakeoverInvocation(starter, frameworkRequest, captured, callerUid, runtime, reserved);
+        } catch (Throwable error) {
+            if (reserved != null) {
+                try { runtime.cancelTakeover(reserved); } catch (Throwable ignored) { }
+            }
+            takeoverLog(5, "autonomous takeover preserved original: prepare-"
+                    + error.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    /** Reflection/value checks only. The inner call runs while the framework holds its global lock. */
+    private String takeoverGuard(TakeoverHook state, Object starter, Object request,
+            AutonomousBridgeCoordinator.Request<Intent> captured, int callerUid, boolean resolved)
+            throws IllegalAccessException {
+        if (request == null || state.doResume.getBoolean(starter) || state.startActivity.get(starter) != null) {
+            return "starter-already-executing";
+        }
+        for (Field field : state.unsupported) if (field.get(request) != null) {
+            return "request-" + field.getName();
+        }
+        Object callPackage = state.callingPackage.get(request);
+        if (!(callPackage instanceof String) || !ActivityStarterTakeoverPolicy.callerMatches(
+                captured.sourcePackage, (String) callPackage, callerUid,
+                state.callingUid.getInt(request), state.realCallingUid.getInt(request))) {
+            return "source-identity-mismatch";
+        }
+        if (state.requestCode.getInt(request) != -1) return "result-chain";
+        Object reason = state.reason.get(request);
+        if (!(reason instanceof String) || ((String) reason).isEmpty()) return "request-reason";
+        Object payload = activityStarterIntentField.get(request);
+        if (!(payload instanceof Intent)) return "intent-unavailable";
+        Intent intent = (Intent) payload;
+        int grants = Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION;
+        if ((intent.getFlags() & (grants | Intent.FLAG_ACTIVITY_FORWARD_RESULT)) != 0
+                || intent.getClipData() != null || intent.getSelector() != null) return "caller-bound-payload";
+        NativeActivityLinkCapture.CapturedLink link = NativeActivityLinkCapture.capture(intent);
+        if (link == null || !captured.sourcePackage.equals(link.sourcePackage)
+                || captured.payload == null || !link.url.equals(captured.payload.getDataString())) {
+            return "source-link-changed";
+        }
+        if (resolved) {
+            Object value = state.activityInfo.get(request);
+            if (!(value instanceof ActivityInfo)) return "source-activity-unresolved";
+            ActivityInfo info = (ActivityInfo) value;
+            if (!link.sourcePackage.equals(info.packageName) || !link.sourceActivity.equals(info.name)
+                    || info.applicationInfo == null || info.applicationInfo.uid != callerUid) {
+                return "resolved-source-identity-mismatch";
+            }
+        }
+        return null;
+    }
+
+    private void completeTakeover(TakeoverInvocation invocation, long observedAt) {
+        try {
+            if (!invocation.frame.wasSuppressed()) {
+                invocation.runtime.cancelTakeover(invocation.frame.reservation);
+                return;
+            }
+            long queuedAt = SystemClock.elapsedRealtime();
+            Handler worker = systemHandler;
+            if (worker == null || !worker.post(() -> invocation.runtime.executeTakeover(
+                    invocation.frame.reservation, observedAt, queuedAt))) {
+                invocation.runtime.abandonTakeover(invocation.frame.reservation);
+            }
+        } catch (Throwable error) {
+            takeoverLog(5, "autonomous takeover dispatch failed: " + error.getClass().getSimpleName());
+            try {
+                if (invocation.frame.wasSuppressed()) {
+                    invocation.runtime.abandonTakeover(invocation.frame.reservation);
+                } else invocation.runtime.cancelTakeover(invocation.frame.reservation);
+            } catch (Throwable fallbackError) {
+                takeoverLog(5, "autonomous takeover cleanup failed: "
+                        + fallbackError.getClass().getSimpleName());
+            }
+        }
+    }
+
+    private void takeoverLog(int priority, String message) {
+        try { log(priority, TAG, message); } catch (Throwable ignored) { }
+    }
+
+    private static Field requireField(Class<?> owner, String name) throws NoSuchFieldException {
+        Field field = findField(owner, name);
+        if (field == null) throw new NoSuchFieldException(name);
+        return field;
+    }
+
+    private static final class TakeoverHook {
+        final Field service, doResume, startActivity, lastReason, lastTime, lastRecord, lastResult;
+        final Field callingPackage, callingUid, realCallingUid, resultTo, requestCode, reason;
+        final Field activityInfo, options;
+        final Field[] unsupported;
+        final Method abortOptions;
+
+        TakeoverHook(Class<?> starter, Class<?> request) throws ReflectiveOperationException {
+            service = requireField(starter, "mService");
+            doResume = requireField(starter, "mDoResume");
+            startActivity = requireField(starter, "mStartActivity");
+            lastReason = requireField(starter, "mLastStartReason");
+            lastTime = requireField(starter, "mLastStartActivityTimeMs");
+            lastRecord = requireField(starter, "mLastStartActivityRecord");
+            lastResult = requireField(starter, "mLastStartActivityResult");
+            callingPackage = requireField(request, "callingPackage");
+            callingUid = requireField(request, "callingUid");
+            realCallingUid = requireField(request, "realCallingUid");
+            resultTo = requireField(request, "resultTo");
+            requestCode = requireField(request, "requestCode");
+            reason = requireField(request, "reason");
+            activityInfo = requireField(request, "activityInfo");
+            options = requireField(request, "activityOptions");
+            String[] names = {"waitResult", "outActivity", "globalConfig", "inTask", "inTaskFragment",
+                    "voiceSession", "voiceInteractor", "profilerInfo"};
+            unsupported = new Field[names.length];
+            for (int index = 0; index < names.length; index++) {
+                unsupported[index] = requireField(request, names[index]);
+            }
+            abortOptions = options.getType().getDeclaredMethod("abort", options.getType());
+            if (!java.lang.reflect.Modifier.isStatic(abortOptions.getModifiers())) {
+                throw new NoSuchMethodException("safe-options-abort-not-static");
+            }
+            abortOptions.setAccessible(true);
+        }
+    }
+
+    private static final class TakeoverInvocation {
+        final ActivityStarterTakeoverPolicy.Frame<SystemAutonomousRuntime.Takeover> frame;
+        final AutonomousBridgeCoordinator.Request<Intent> captured;
+        final int callingUid;
+        final SystemAutonomousRuntime runtime;
+
+        TakeoverInvocation(Object starter, Object request, AutonomousBridgeCoordinator.Request<Intent> captured,
+                           int callingUid, SystemAutonomousRuntime runtime, SystemAutonomousRuntime.Takeover ticket) {
+            frame = new ActivityStarterTakeoverPolicy.Frame<>(starter, request, ticket);
+            this.captured = captured;
+            this.callingUid = callingUid;
+            this.runtime = runtime;
         }
     }
 
@@ -536,7 +798,7 @@ public final class IceBridgeModule extends XposedModule {
         if (original == null || configuration == null || !configuration.recoveryEnabled
                 || !configuration.autoOpenLinks) return null;
         String token = original.getStringExtra(EXTRA_NATIVE_REPLAY_TOKEN);
-        if (token != null && consumeReplayToken(token)) return null;
+        if (token != null && ReplayRequestScope.accept(token, this::consumeReplayToken)) return null;
         String caller = null;
         boolean hasSourceToken = true;
         Integer requestCode = null;
@@ -611,7 +873,7 @@ public final class IceBridgeModule extends XposedModule {
         // user click must still be able to wake it. This explicit marker is the loop guard for
         // the immediate replay/fallback path.
         String replayToken = original.getStringExtra(EXTRA_NATIVE_REPLAY_TOKEN);
-        if (replayToken != null && consumeReplayToken(replayToken)) {
+        if (replayToken != null && ReplayRequestScope.accept(replayToken, this::consumeReplayToken)) {
             log(4, TAG, "native link skipped: replay guard consumed token=" + shortToken(replayToken));
             return null;
         }
@@ -1496,6 +1758,7 @@ public final class IceBridgeModule extends XposedModule {
             SystemServerConfigContract.Snapshot parsed = SystemServerConfigContract.parse(snapshot);
             if (parsed.available && runtime != null) {
                 runtime.accept(parsed, activityInterceptionReady && activityPreflightReady
+                        && (!parsed.nativeLinkCapture || takeoverHook != null)
                         && (!parsed.clipboardAutoOpen || clipboardHookInstalled));
                 SystemRuntimeConfig.State retained = runtime.current(parsed.userId);
                 if (retained != null) return RecoveryConfiguration.autonomous(retained);

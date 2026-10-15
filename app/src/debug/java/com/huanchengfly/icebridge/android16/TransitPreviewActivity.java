@@ -15,11 +15,15 @@ public final class TransitPreviewActivity extends Activity {
     private int backgroundClicks;
     private Runnable backgroundDownCallback;
     private Runnable backgroundClickCallback;
+    private String sourcePackage = "com.android.settings";
+    private String targetPackage = "com.android.calendar";
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         FrameLayout root = new FrameLayout(this);
         boolean dark = getIntent().getBooleanExtra("preview_dark", false);
+        sourcePackage = previewPackage("preview_source", sourcePackage);
+        targetPackage = previewPackage("preview_target", targetPackage);
         root.setBackgroundColor(dark ? 0xff11131a : 0xffeef1f8);
         background = new TextView(this);
         background.setText("IceBridge");
@@ -54,11 +58,11 @@ public final class TransitPreviewActivity extends Activity {
 
     public void show(long id, SystemTransitPresenter.Stage stage, int seed, String appearance) {
         if (presenter == null) presenter = SystemTransitPresenter.createPreview(this, message -> { });
-        presenter.onStage(id, 0, "com.android.settings", stage, seed, appearance);
+        presenter.onStage(id, 0, sourcePackage, targetPackage, stage, seed, appearance);
     }
 
     public void submitted(long id) { presenter.onSubmitted(id); }
-    public void targetDrawn(long id) { presenter.onTargetDrawn(id, 0, "com.android.settings"); }
+    public void targetDrawn(long id) { presenter.onTargetDrawn(id, 0, targetPackage); }
     public void fail(long id) { presenter.finish(id, "preview-failure"); }
     public View card() { return presenter == null ? null : presenter.previewCard(); }
     public View backgroundView() { return background; }
@@ -66,6 +70,11 @@ public final class TransitPreviewActivity extends Activity {
     public void observeBackgroundInput(Runnable onDown, Runnable onClick) {
         backgroundDownCallback = onDown;
         backgroundClickCallback = onClick;
+    }
+
+    private String previewPackage(String extra, String fallback) {
+        String value = getIntent().getStringExtra(extra);
+        return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 
     @Override protected void onDestroy() {

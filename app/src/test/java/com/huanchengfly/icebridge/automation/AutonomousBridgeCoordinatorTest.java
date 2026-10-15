@@ -23,6 +23,86 @@ public class AutonomousBridgeCoordinatorTest {
     private static final State READY = State.known(true, 0, true, false, false);
     private static final State ABSENT = State.known(false, 0, false, false, false);
 
+    @Test public void prepareReusesSourcePriorityAndConversionWithoutMutationOrDeduplication() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, FROZEN);
+        f.packages.put(0, OTHER, FROZEN);
+        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
+                SOURCE, "prepared", true, true);
+        List<LinkRuleEntry> rules = Arrays.asList(rule("*", OTHER, "manual", "none"),
+                rule(SOURCE, TARGET, "manual", "fixed_deep_link"));
+        AutonomousBridgeCoordinator.Plan first = f.worker.prepare(request, rules);
+        assertNotNull(first);
+        assertEquals(TARGET, first.targetPackage);
+        assertEquals("fixed_deep_link", first.conversion);
+        assertNotNull(f.worker.prepare(request, rules));
+        assertSame(FROZEN, f.packages.states.get("0:" + TARGET));
+        assertTrue(f.packages.thaws.isEmpty());
+        assertEquals(0, f.launcher.launches);
+        assertEquals(0, f.launcher.fallbacks);
+        assertTrue(f.progress.isEmpty());
+        // Preparing must not reserve the request in the worker's successful-transaction map.
+        assertEquals(Outcome.ROUTED, f.worker.execute(request, rules).outcome);
+        f.packages.put(0, TARGET, FROZEN);
+        f.now = 2_000;
+        assertNotNull("Preflight must not consult worker-owned deduplication", f.worker.prepare(request, rules));
+        f.now = 1_000;
+        // Nor may preparation prune an entry using the later preflight time.
+        assertEquals(Outcome.DUPLICATE, f.worker.execute(request, rules).outcome);
+        assertEquals(1, f.launcher.launches);
+        assertEquals(0, f.launcher.fallbacks);
+    }
+
+    @Test public void prepareRequiresWebAutoOpenKnownUserAndHonorsOnlyFrozen() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, READY);
+        assertNull(f.worker.prepare(request(Kind.WEB_RULE, 0, SOURCE, "frozen-only", true, true), rules()));
+        AutonomousBridgeCoordinator.Request<Object> allowEnabled = new AutonomousBridgeCoordinator.Request<>(
+                Kind.WEB_RULE, 0, SOURCE, "example.com", null, "enabled", new Object(), true, true, false);
+        AutonomousBridgeCoordinator.Plan plan = f.worker.prepare(allowEnabled, rules());
+        assertNotNull(plan);
+        assertEquals(TARGET, plan.targetPackage);
+        f.packages.reads.clear();
+        assertNull(f.worker.prepare(request(Kind.EXPLICIT, 0, SOURCE, "explicit", true, true), rules()));
+        assertNull(f.worker.prepare(request(Kind.THAW_ONLY, 0, SOURCE, "thaw-only", true, true), rules()));
+        assertNull(f.worker.prepare(request(Kind.WEB_RULE, 0, SOURCE, "auto-off", true, false), rules()));
+        assertNull(f.worker.prepare(request(Kind.WEB_RULE, -1, SOURCE, "unknown-user", true, true), rules()));
+        assertTrue("Rejected request kinds and settings must not query package state", f.packages.reads.isEmpty());
+        assertTrue(f.packages.thaws.isEmpty());
+        assertEquals(0, f.launcher.launches);
+        assertEquals(0, f.launcher.fallbacks);
+    }
+
+    @Test public void prepareDoesNotClaimAmbiguousOrUnsupportedTargets() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, FROZEN);
+        f.packages.put(0, OTHER, FROZEN);
+        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
+                SOURCE, "unclaimed", true, true);
+        assertNull(f.worker.prepare(request, Arrays.asList(rule("*", TARGET, "online", "none"),
+                rule("*", OTHER, "online", "none"))));
+        assertNull(f.worker.prepare(request, Arrays.asList(rule("*", TARGET, "online", "none"),
+                rule("*", TARGET, "online", "fixed_deep_link"))));
+        f.packages.enable = false;
+        assertNull(f.worker.prepare(request, rules()));
+        f.packages.enable = true;
+        f.packages.unhide = false;
+        f.packages.put(0, TARGET, State.known(true, 0, true, true, false));
+        assertNull(f.worker.prepare(request, rules()));
+        f.packages.unhide = true;
+        assertNotNull("A hidden target is claimable when unhide is supported", f.worker.prepare(request, rules()));
+        f.packages.put(0, TARGET, State.known(true, 0, true, false, true));
+        assertNull(f.worker.prepare(request, rules()));
+        f.packages.put(0, TARGET, State.unknown("read-failed"));
+        assertNull(f.worker.prepare(request, rules()));
+        f.packages.put(0, SELF, FROZEN);
+        assertNull(f.worker.prepare(request, Collections.singletonList(rule("*", SELF, "manual", "none"))));
+        assertTrue(f.packages.thaws.isEmpty());
+        assertEquals(0, f.launcher.launches);
+        assertEquals(0, f.launcher.fallbacks);
+        assertTrue(f.progress.isEmpty());
+    }
+
     @Test public void sourceSpecificConversionAndLiveUserStateReachLauncher() {
         Fixture f = new Fixture();
         f.packages.put(10, TARGET, FROZEN);

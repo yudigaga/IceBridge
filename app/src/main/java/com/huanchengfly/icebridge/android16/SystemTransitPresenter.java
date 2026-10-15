@@ -8,11 +8,11 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
@@ -20,13 +20,11 @@ import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.Process;
 import android.os.SystemClock;
-import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import com.huanchengfly.icebridge.BuildConfig;
@@ -113,10 +111,15 @@ public final class SystemTransitPresenter {
     }
 
     public void onStage(long id, int userId, String targetPackage, Stage stage, int seed, String appearance) {
+        onStage(id, userId, null, targetPackage, stage, seed, appearance);
+    }
+
+    public void onStage(long id, int userId, String sourcePackage, String targetPackage,
+                        Stage stage, int seed, String appearance) {
         if (stage == null) return;
         post(() -> {
             boolean newSession = sessions.active() == null || sessions.active().id != id;
-            if (!sessions.stage(id, userId, targetPackage, stage == Stage.THAWING
+            if (!sessions.stage(id, userId, sourcePackage, targetPackage, stage == Stage.THAWING
                     ? TransitSessionPolicy.THAWING : TransitSessionPolicy.OPENING,
                     seed, appearance, clock.uptimeMillis())) return;
             if (!listening) {
@@ -240,16 +243,14 @@ public final class SystemTransitPresenter {
     private static final class NativeWindowHost implements WindowHost {
         private final Context suppliedContext;
         private final IBinder previewToken;
-        private final Map<String, String> labels = new HashMap<>();
+        private final Map<String, AppVisual> applications = new HashMap<>();
         private Context windowContext;
         private WindowManager manager;
         private LinearLayout card;
         private TextView title;
-        private TextView target;
         private TextView detail;
         private TextView brand;
-        private LinearLayout inset;
-        private ProgressBar progress;
+        private TransitFlowView flow;
         private boolean attached;
 
         NativeWindowHost(Context context, IBinder previewToken) {
@@ -295,17 +296,17 @@ public final class SystemTransitPresenter {
             TransitSessionPolicy.Palette palette = TransitSessionPolicy.Palette.fromSeed(session.seed, dark);
             if (card == null) createCard();
             card.setBackground(shape(palette.card, 24, palette.outline));
-            inset.setBackground(shape(palette.inset, 14, 0));
             title.setTextColor(palette.title);
-            target.setTextColor(palette.secondary);
             detail.setTextColor(palette.secondary);
             brand.setTextColor(palette.accent);
-            progress.setIndeterminateTintList(ColorStateList.valueOf(palette.accent));
             title.setText(session.stage == TransitSessionPolicy.THAWING ? "正在解冻" : "正在打开");
-            target.setText(label(session.targetPackage));
+            AppVisual source = application(session.sourcePackage, "发起应用");
+            AppVisual target = application(session.targetPackage, "目标应用");
+            flow.bind(source.icon, source.label, target.icon, target.label, palette);
             detail.setText(session.stage == TransitSessionPolicy.THAWING
                     ? "正在恢复应用可用状态" : "正在启动应用，等待画面显示");
-            card.setContentDescription("IceBridge，" + title.getText() + "，" + target.getText());
+            card.setContentDescription("IceBridge，" + source.label + " → " + target.label
+                    + "，" + title.getText());
             if (!attached) {
                 WindowManager.LayoutParams params = parameters();
                 manager.addView(card, params);
@@ -339,7 +340,7 @@ public final class SystemTransitPresenter {
         private void createCard() {
             card = new LinearLayout(windowContext);
             card.setOrientation(LinearLayout.VERTICAL);
-            card.setPadding(dp(24), dp(22), dp(24), dp(22));
+            card.setPadding(dp(22), dp(20), dp(22), dp(20));
             card.setElevation(dp(16));
             card.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
             card.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
@@ -347,57 +348,56 @@ public final class SystemTransitPresenter {
             LinearLayout header = new LinearLayout(windowContext);
             header.setOrientation(LinearLayout.HORIZONTAL);
             header.setGravity(Gravity.CENTER_VERTICAL);
-            progress = new ProgressBar(windowContext, null, android.R.attr.progressBarStyleSmall);
-            progress.setIndeterminate(true);
-            header.addView(progress, new LinearLayout.LayoutParams(dp(30), dp(30)));
-            title = text(21, true);
+            title = text(18, true);
             LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0,
                     LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-            titleParams.setMarginStart(dp(15));
             header.addView(title, titleParams);
+            brand = text(11, true);
+            brand.setText("IceBridge");
+            header.addView(brand);
             card.addView(header);
 
-            target = text(15, false);
-            target.setSingleLine(true);
-            target.setEllipsize(TextUtils.TruncateAt.END);
-            LinearLayout.LayoutParams targetParams = new LinearLayout.LayoutParams(
+            flow = new TransitFlowView(windowContext);
+            LinearLayout.LayoutParams flowParams = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            targetParams.topMargin = dp(14);
-            card.addView(target, targetParams);
+            flowParams.topMargin = dp(10);
+            card.addView(flow, flowParams);
 
-            inset = new LinearLayout(windowContext);
-            inset.setOrientation(LinearLayout.VERTICAL);
-            inset.setPadding(dp(14), dp(12), dp(14), dp(12));
-            detail = text(13, false);
+            detail = text(12, false);
+            detail.setGravity(Gravity.CENTER);
             detail.setMaxLines(2);
-            inset.addView(detail);
-            LinearLayout.LayoutParams insetParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            insetParams.topMargin = dp(18);
-            card.addView(inset, insetParams);
-
-            brand = text(12, true);
-            brand.setText("IceBridge");
-            LinearLayout.LayoutParams brandParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            brandParams.topMargin = dp(16);
-            card.addView(brand, brandParams);
+            detailParams.topMargin = dp(6);
+            card.addView(detail, detailParams);
         }
 
-        private String label(String packageName) {
-            String cached = labels.get(packageName);
+        private AppVisual application(String packageName, String fallbackLabel) {
+            AppVisual cached = applications.get(packageName);
             if (cached != null) return cached;
-            String name = packageName;
+            PackageManager pm = windowContext.getPackageManager();
+            String name = packageName == null ? fallbackLabel : packageName;
+            Drawable icon = pm.getDefaultActivityIcon();
             try {
-                PackageManager pm = windowContext.getPackageManager();
-                ApplicationInfo info = pm.getApplicationInfo(packageName,
-                        PackageManager.MATCH_DISABLED_COMPONENTS | PackageManager.MATCH_UNINSTALLED_PACKAGES);
-                CharSequence label = info.loadLabel(pm);
-                if (label != null && label.length() != 0) name = label.toString();
+                if (packageName != null) {
+                    ApplicationInfo info = pm.getApplicationInfo(packageName,
+                            PackageManager.MATCH_DISABLED_COMPONENTS | PackageManager.MATCH_UNINSTALLED_PACKAGES);
+                    CharSequence label = info.loadLabel(pm);
+                    if (label != null && label.length() != 0) name = label.toString();
+                    Drawable loaded = info.loadIcon(pm);
+                    if (loaded != null) icon = loaded;
+                }
             } catch (Throwable ignored) { }
-            if (labels.size() >= 64) labels.clear();
-            labels.put(packageName, name);
-            return name;
+            if (applications.size() >= 64) applications.clear();
+            AppVisual result = new AppVisual(name, icon);
+            applications.put(packageName, result);
+            return result;
+        }
+
+        private static final class AppVisual {
+            final String label;
+            final Drawable icon;
+            AppVisual(String label, Drawable icon) { this.label = label; this.icon = icon; }
         }
 
         private TextView text(int sp, boolean strong) {

@@ -11,17 +11,23 @@ public final class TransitSessionPolicy {
 
     public synchronized boolean stage(long id, int userId, String targetPackage, int stage,
                                       int seed, String appearance, long now) {
+        return stage(id, userId, null, targetPackage, stage, seed, appearance, now);
+    }
+
+    public synchronized boolean stage(long id, int userId, String sourcePackage,
+                                      String targetPackage, int stage, int seed,
+                                      String appearance, long now) {
         if (id < 1 || userId < 0 || targetPackage == null || targetPackage.isEmpty()
                 || targetPackage.length() > 255 || (stage != THAWING && stage != OPENING)
                 || id < highestId || (id == highestId && active == null)) return false;
         if (active != null && id == active.id) {
             if (active.userId != userId || !active.targetPackage.equals(targetPackage)
                     || stage < active.stage) return false;
-            active = new Session(id, userId, targetPackage, stage, seed, appearance,
+            active = new Session(id, userId, active.sourcePackage, targetPackage, stage, seed, appearance,
                     active.startedAt, active.deadline, active.submitted);
         } else {
             highestId = id;
-            active = new Session(id, userId, targetPackage, stage, seed, appearance, now,
+            active = new Session(id, userId, normalizeSource(sourcePackage), targetPackage, stage, seed, appearance, now,
                     now + TIMEOUT_MILLIS, false);
         }
         return true;
@@ -29,7 +35,7 @@ public final class TransitSessionPolicy {
 
     public synchronized boolean submitted(long id) {
         if (active == null || active.id != id || active.stage != OPENING) return false;
-        active = new Session(active.id, active.userId, active.targetPackage, active.stage,
+        active = new Session(active.id, active.userId, active.sourcePackage, active.targetPackage, active.stage,
                 active.seed, active.appearance, active.startedAt, active.deadline, true);
         return true;
     }
@@ -61,9 +67,17 @@ public final class TransitSessionPolicy {
 
     public synchronized Session active() { return active; }
 
+    private static String normalizeSource(String sourcePackage) {
+        if (sourcePackage == null) return null;
+        String normalized = sourcePackage.trim();
+        return normalized.isEmpty() || "*".equals(normalized) || normalized.length() > 255
+                ? null : normalized;
+    }
+
     public static final class Session {
         public final long id;
         public final int userId;
+        public final String sourcePackage;
         public final String targetPackage;
         public final int stage;
         public final int seed;
@@ -72,10 +86,11 @@ public final class TransitSessionPolicy {
         public final long deadline;
         public final boolean submitted;
 
-        private Session(long id, int userId, String targetPackage, int stage, int seed,
+        private Session(long id, int userId, String sourcePackage, String targetPackage, int stage, int seed,
                         String appearance, long startedAt, long deadline, boolean submitted) {
             this.id = id;
             this.userId = userId;
+            this.sourcePackage = sourcePackage;
             this.targetPackage = targetPackage;
             this.stage = stage;
             this.seed = seed | 0xff000000;
