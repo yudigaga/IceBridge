@@ -32,6 +32,7 @@ import com.huanchengfly.icebridge.activities.AboutActivity
 import com.huanchengfly.icebridge.activities.BridgePreferencesActivity
 import com.huanchengfly.icebridge.activities.EnhanceModeActivity
 import com.huanchengfly.icebridge.activities.PermissionActivity
+import com.huanchengfly.icebridge.activities.SmallWindowSettingsActivity
 import com.huanchengfly.icebridge.databases.AppConfig
 import com.huanchengfly.icebridge.SystemServerConfigContract
 import androidx.lifecycle.Lifecycle
@@ -66,7 +67,6 @@ private const val KEY_AUTO_OPEN = "auto_open_links"
 private const val KEY_NATIVE_CAPTURE = "native_link_capture"
 private const val KEY_PAYMENT_BRIDGE = "payment_sdk_bridge"
 private const val KEY_HIDE_RECENTS = "hide_bridge_from_recents"
-private const val KEY_ONLY_FROZEN = "only_frozen_link_targets"
 private const val KEY_BROWSER_FALLBACK = "link_browser_fallback"
 private const val KEY_CLIPBOARD = "clipboard_auto_open"
 private const val KEY_DEBUG = "module_debug_logging"
@@ -85,7 +85,6 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
     var native by remember { mutableStateOf(p.getBoolean(KEY_NATIVE_CAPTURE, false)) }
     var payment by remember { mutableStateOf(p.getBoolean(KEY_PAYMENT_BRIDGE, true)) }
     var recents by remember { mutableStateOf(p.getBoolean(KEY_HIDE_RECENTS, true)) }
-    var frozen by remember { mutableStateOf(p.getBoolean(KEY_ONLY_FROZEN, true)) }
     var fallback by remember { mutableStateOf(p.getBoolean(KEY_BROWSER_FALLBACK, true)) }
     var clip by remember { mutableStateOf(p.getBoolean(KEY_CLIPBOARD, false)) }
     var debug by remember { mutableStateOf(p.getBoolean(KEY_DEBUG, false)) }
@@ -179,7 +178,8 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
             SuperSwitch(title="小窗打开", summary="独立运行时，仅对下方选中的链接目标请求系统小窗", checked=smallWindow,
                 onCheckedChange={ smallWindow=it; setv(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW,it) })
             SuperArrow(title="小窗应用", summary=if(smallWindowPackages.isEmpty()) "未选择应用时不使用小窗" else "已选择 ${smallWindowPackages.size} 个应用", onClick={ showSmallWindowApps=true })
-            SuperSwitch(title="仅处理被冻结的应用", summary="推荐开启，避免干预正常运行的应用", checked=frozen, onCheckedChange={ frozen=it; setv(KEY_ONLY_FROZEN,it) })
+            SuperArrow(title="小窗尺寸与位置", summary="调整宽高和位置，实时预览小窗与中转卡片", onClick={ a.startActivity(Intent(a, SmallWindowSettingsActivity::class.java)) })
+            InfoRow("规则内统一打开", "命中规则的普通链接始终由模块打开目标；冻结时先解冻，已解冻时直接打开。")
             SuperSwitch(title="不在最近任务中显示 IceBridge", summary="隐藏临时桥接页与 IceBridge 任务", checked=recents, onCheckedChange={ recents=it; a.setPref(KEY_HIDE_RECENTS,it); RecentTaskVisibility.apply(a,it) })
             SuperSwitch(title="跳转失败时回退浏览器", summary="目标应用无法打开时继续打开原网页", checked=fallback, onCheckedChange={ fallback=it; setv(KEY_BROWSER_FALLBACK,it) })
         }

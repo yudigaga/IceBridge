@@ -17,6 +17,9 @@ public final class SystemAutonomousCapture {
     private static final String SELF = "io.github.yudigaga.icebridge";
     private static final Pattern PACKAGE_NAME = Pattern.compile(
             "[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+");
+    private static final int CALLER_FLAGS = Intent.FLAG_GRANT_READ_URI_PERMISSION
+            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION | Intent.FLAG_ACTIVITY_FORWARD_RESULT;
 
     private SystemAutonomousCapture() { }
 
@@ -47,6 +50,9 @@ public final class SystemAutonomousCapture {
         }
         if (hasResultTo && (requestCode == null || requestCode >= 0)) {
             return skipped("result-token", recognized);
+        }
+        if (hasCallerBoundPayload(original)) {
+            return skipped("caller-grants", recognized);
         }
         NativeActivityLinkCapture.CapturedLink captured = configuration.nativeLinkCapture
                 ? NativeActivityLinkCapture.capture(original) : null;
@@ -82,10 +88,6 @@ public final class SystemAutonomousCapture {
                 || (original.getPackage() != null && !target.equals(original.getPackage()))) {
             return skipped("target-mismatch", recognized);
         }
-        if ((original.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) != 0
-                || original.getClipData() != null || original.getSelector() != null) {
-            return skipped("caller-grants", recognized);
-        }
         Intent payload = direct.equals(original.getData()) ? new Intent(original)
                 : new Intent(Intent.ACTION_VIEW, direct).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(target);
         return selected(new AutonomousBridgeCoordinator.Request<>(AutonomousBridgeCoordinator.Kind.EXPLICIT,
@@ -100,5 +102,48 @@ public final class SystemAutonomousCapture {
 
     private static Result selected(AutonomousBridgeCoordinator.Request<Intent> request, boolean recognized) {
         return new Result(request, "captured", recognized);
+    }
+
+    /**
+     * Recognized private browser carriers and plain public VIEW links are replayable as public
+     * URLs. Bound activities, opaque extras and URI grants must keep the caller's original chain.
+     * This checks values only and is safe both before and inside the framework launch lock.
+     */
+    public static boolean matchesOwnedWebSource(Intent original,
+            AutonomousBridgeCoordinator.Request<Intent> request) {
+        if (original == null || request == null
+                || request.kind != AutonomousBridgeCoordinator.Kind.WEB_RULE
+                || request.explicitTarget != null || request.payload == null
+                || request.payload.getData() == null || request.sourcePackage == null
+                || !PACKAGE_NAME.matcher(request.sourcePackage).matches()
+                || SELF.equals(request.sourcePackage)
+                || hasCallerBoundPayload(original)) return false;
+        NativeActivityLinkCapture.CapturedLink nativeSource = NativeActivityLinkCapture.capture(original);
+        if (nativeSource != null) {
+            return request.sourcePackage.equals(nativeSource.sourcePackage)
+                    && nativeSource.url.equals(request.payload.getDataString());
+        }
+        Uri data = original.getData();
+        String scheme = data == null ? null : data.getScheme();
+        if (!Intent.ACTION_VIEW.equals(original.getAction()) || original.getComponent() != null
+                || original.getPackage() != null || original.getType() != null
+                || (original.getExtras() != null && !original.getExtras().isEmpty())
+                || data == null || data.getHost() == null
+                || !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                || !data.equals(request.payload.getData())) return false;
+        java.util.Set<String> categories = original.getCategories();
+        if (categories != null) for (String category : categories) {
+            if (!Intent.CATEGORY_BROWSABLE.equals(category) && !Intent.CATEGORY_DEFAULT.equals(category)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Shared by independent takeover and the legacy foreground bridge before replacing a source. */
+    public static boolean hasCallerBoundPayload(Intent original) {
+        return original == null || (original.getFlags() & CALLER_FLAGS) != 0
+                || original.getClipData() != null || original.getSelector() != null
+                || original.hasFileDescriptors();
     }
 }

@@ -59,6 +59,7 @@ public final class SystemRuntimeConfig {
         public final boolean transitCardEnabled;
         public final boolean openLinksInSmallWindow;
         public final Set<String> smallWindowPackages;
+        public final SmallWindowLayout smallWindowLayout;
         public final List<LinkRuleEntry> scopedRules;
         public final OnlineState online;
 
@@ -115,11 +116,26 @@ public final class SystemRuntimeConfig {
                      OnlineState online, int transitSeedColor, String transitAppearance,
                      boolean transitCardEnabled, boolean openLinksInSmallWindow,
                      String[] smallWindowPackages) throws IOException {
+            this(providerSchemaVersion, userId, savedAtEpochMillis, autonomousEnabled, recoveryEnabled,
+                    autoOpenLinks, nativeLinkCapture, clipboardAutoOpen, paymentSdkBridge, onlyFrozen,
+                    browserFallback, onlineUpdatesEnabled, scopedRules, online, transitSeedColor,
+                    transitAppearance, transitCardEnabled, openLinksInSmallWindow, smallWindowPackages,
+                    SmallWindowLayout.DEFAULT);
+        }
+
+        public State(int providerSchemaVersion, int userId, long savedAtEpochMillis,
+                     boolean autonomousEnabled, boolean recoveryEnabled, boolean autoOpenLinks,
+                     boolean nativeLinkCapture, boolean clipboardAutoOpen, boolean paymentSdkBridge,
+                     boolean onlyFrozen, boolean browserFallback, boolean onlineUpdatesEnabled, String[] scopedRules,
+                     OnlineState online, int transitSeedColor, String transitAppearance,
+                     boolean transitCardEnabled, boolean openLinksInSmallWindow,
+                     String[] smallWindowPackages, SmallWindowLayout smallWindowLayout) throws IOException {
             checkUserId(userId);
             require(providerSchemaVersion > 0 && providerSchemaVersion <= 10000, "runtime-provider-schema");
             require(savedAtEpochMillis >= 0, "runtime-saved-at");
             require((transitSeedColor >>> 24) == 0xff, "runtime-transit-seed-color");
             require(isTransitAppearance(transitAppearance), "runtime-transit-appearance");
+            require(smallWindowLayout != null, "runtime-small-window-layout");
             this.providerSchemaVersion = providerSchemaVersion;
             this.userId = userId;
             this.savedAtEpochMillis = savedAtEpochMillis;
@@ -136,6 +152,7 @@ public final class SystemRuntimeConfig {
             this.transitAppearance = transitAppearance;
             this.transitCardEnabled = transitCardEnabled;
             this.openLinksInSmallWindow = openLinksInSmallWindow;
+            this.smallWindowLayout = smallWindowLayout;
             try {
                 this.smallWindowPackages = normalizeSmallWindowPackages(smallWindowPackages);
             } catch (IllegalArgumentException invalidPackages) {
@@ -157,7 +174,7 @@ public final class SystemRuntimeConfig {
                     recoveryEnabled, autoOpenLinks, nativeLinkCapture, clipboardAutoOpen,
                     paymentSdkBridge, onlyFrozen, browserFallback, onlineUpdatesEnabled, mergedRules, replacement,
                     transitSeedColor, transitAppearance, transitCardEnabled, openLinksInSmallWindow,
-                    smallWindowPackages.toArray(new String[0]));
+                    smallWindowPackages.toArray(new String[0]), smallWindowLayout);
         }
     }
 
@@ -237,6 +254,12 @@ public final class SystemRuntimeConfig {
         JsonArray smallWindowPackages = new JsonArray();
         for (String packageName : state.smallWindowPackages) smallWindowPackages.add(new JsonPrimitive(packageName));
         root.add("smallWindowPackages", smallWindowPackages);
+        JsonArray smallWindowLayout = new JsonArray();
+        smallWindowLayout.add(state.smallWindowLayout.widthPercent);
+        smallWindowLayout.add(state.smallWindowLayout.heightPercent);
+        smallWindowLayout.add(state.smallWindowLayout.horizontalPercent);
+        smallWindowLayout.add(state.smallWindowLayout.verticalPercent);
+        root.add("smallWindowLayout", smallWindowLayout);
         JsonArray rules = new JsonArray();
         for (String rule : state.encodedRules()) rules.add(new JsonPrimitive(rule));
         root.add("scopedRules", rules);
@@ -264,7 +287,7 @@ public final class SystemRuntimeConfig {
                 state.paymentSdkBridge, state.onlyFrozen, state.browserFallback, state.onlineUpdatesEnabled,
                 state.encodedRules(), metadata, state.transitSeedColor, state.transitAppearance,
                 state.transitCardEnabled, state.openLinksInSmallWindow,
-                state.smallWindowPackages.toArray(new String[0]));
+                state.smallWindowPackages.toArray(new String[0]), state.smallWindowLayout);
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(encode(baseline));
             StringBuilder result = new StringBuilder(64);
@@ -295,6 +318,7 @@ public final class SystemRuntimeConfig {
                     "autonomousEnabled", "recoveryEnabled", "autoOpenLinks", "nativeLinkCapture",
                     "clipboardAutoOpen", "paymentSdkBridge", "onlyFrozen", "browserFallback", "onlineUpdatesEnabled",
                     "transitSeedColor", "transitAppearance", "transitCardEnabled", "openLinksInSmallWindow", "smallWindowPackages",
+                    "smallWindowLayout",
                     "scopedRules", "online");
             require(FORMAT.equals(string(root, "format", 64)), "runtime-format");
             require(integer(root, "version") == VERSION, "runtime-version");
@@ -343,11 +367,29 @@ public final class SystemRuntimeConfig {
                     selectedPackages[i] = packageName.getAsString();
                 }
             }
+            SmallWindowLayout layout = SmallWindowLayout.DEFAULT;
+            if (root.has("smallWindowLayout")) {
+                JsonElement value = root.get("smallWindowLayout");
+                require(value.isJsonArray() && value.getAsJsonArray().size() == 4,
+                        "runtime-small-window-layout");
+                int[] percentages = new int[4];
+                for (int index = 0; index < percentages.length; index++) {
+                    JsonElement percentage = value.getAsJsonArray().get(index);
+                    require(percentage.isJsonPrimitive() && percentage.getAsJsonPrimitive().isNumber(),
+                            "runtime-small-window-layout");
+                    try { percentages[index] = percentage.getAsBigDecimal().intValueExact(); }
+                    catch (ArithmeticException | NumberFormatException error) {
+                        throw new IOException("runtime-small-window-layout", error);
+                    }
+                }
+                try { layout = new SmallWindowLayout(percentages[0], percentages[1], percentages[2], percentages[3]); }
+                catch (IllegalArgumentException error) { throw new IOException("runtime-small-window-layout", error); }
+            }
             return new State((int) schema, (int) userId, integer(root, "savedAtEpochMillis"),
                     bool(root, "autonomousEnabled"), bool(root, "recoveryEnabled"), bool(root, "autoOpenLinks"),
                     bool(root, "nativeLinkCapture"), bool(root, "clipboardAutoOpen"), bool(root, "paymentSdkBridge"),
                     bool(root, "onlyFrozen"), bool(root, "browserFallback"), bool(root, "onlineUpdatesEnabled"),
-                    rules, cache, (int) seedColor, appearance, cardEnabled, smallWindow, selectedPackages);
+                    rules, cache, (int) seedColor, appearance, cardEnabled, smallWindow, selectedPackages, layout);
         } catch (RuntimeException error) {
             throw new IOException("runtime-json", error);
         }

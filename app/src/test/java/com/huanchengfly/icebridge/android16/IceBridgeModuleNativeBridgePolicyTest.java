@@ -32,6 +32,26 @@ public class IceBridgeModuleNativeBridgePolicyTest {
     }
 
     @Test
+    public void matchedWebRuleUsesModuleForEnabledOrFrozenTarget() {
+        assertFalse(NativeBridgePolicy.shouldBypass(false, true, Collections.singleton(FROZEN), ENABLED));
+        assertFalse(NativeBridgePolicy.shouldBypass(false, true, Collections.singleton(FROZEN), FROZEN));
+        assertFalse(NativeBridgePolicy.shouldBypass(false, true, Collections.emptySet(), ENABLED));
+        // No matched target and ordinary direct schemes retain their original-call safeguards.
+        assertTrue(NativeBridgePolicy.shouldBypass(false, true, Collections.emptySet(), null));
+        assertTrue(NativeBridgePolicy.shouldBypass(false, false, Collections.emptySet(), ENABLED));
+    }
+
+    @Test
+    public void ordinaryNoResultStartMayReplaceWebSourceButRealOrUnknownResultMustStayOriginal() {
+        assertTrue(NativeBridgePolicy.canReplaceWebSource(-1, false));
+        assertFalse(NativeBridgePolicy.canReplaceWebSource(0, false));
+        assertFalse(NativeBridgePolicy.canReplaceWebSource(42, false));
+        assertFalse(NativeBridgePolicy.canReplaceWebSource(null, false));
+        assertFalse(NativeBridgePolicy.canReplaceWebSource(-2, false));
+        assertFalse(NativeBridgePolicy.canReplaceWebSource(-1, true));
+    }
+
+    @Test
     public void emptySnapshotPreservesOriginalIntentUntilStateIsKnown() {
         assertTrue(NativeBridgePolicy.shouldBypass(
                 false, Collections.emptySet(), ENABLED));

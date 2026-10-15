@@ -53,10 +53,10 @@ public class AutonomousBridgeCoordinatorTest {
         assertEquals(0, f.launcher.fallbacks);
     }
 
-    @Test public void prepareRequiresWebAutoOpenKnownUserAndHonorsOnlyFrozen() {
+    @Test public void prepareRequiresWebAutoOpenKnownUserAndAcceptsEnabledRulesWithLegacyFrozenOnly() {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, READY);
-        assertNull(f.worker.prepare(request(Kind.WEB_RULE, 0, SOURCE, "frozen-only", true, true), rules()));
+        assertNotNull(f.worker.prepare(request(Kind.WEB_RULE, 0, SOURCE, "legacy-frozen-only", true, true), rules()));
         AutonomousBridgeCoordinator.Request<Object> allowEnabled = new AutonomousBridgeCoordinator.Request<>(
                 Kind.WEB_RULE, 0, SOURCE, "example.com", null, "enabled", new Object(), true, true, false);
         AutonomousBridgeCoordinator.Plan plan = f.worker.prepare(allowEnabled, rules());
@@ -119,14 +119,62 @@ public class AutonomousBridgeCoordinatorTest {
         assertEquals(0, f.launcher.fallbacks);
     }
 
-    @Test public void currentStateOverridesOldFrozenSnapshotWithoutThawingOrLaunching() {
+    @Test public void enabledRuleUsesModuleRouteWithoutThawingOrReplayingOriginal() {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, READY);
-        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.WEB_RULE, 0, SOURCE,
+        assertEquals(Outcome.ROUTED, f.worker.execute(request(Kind.WEB_RULE, 0, SOURCE,
                 "a", true, true), rules()).outcome);
         assertTrue(f.packages.thaws.isEmpty());
+        assertEquals(0, f.launcher.fallbacks);
+        assertEquals(1, f.launcher.launches);
+        assertEquals(TARGET, f.launcher.target);
+    }
+
+    @Test public void enabledTargetNeedsNoThawCapabilityAndUsesMatchingSourceConversion() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, READY);
+        f.packages.enable = false;
+        f.packages.unhide = false;
+        List<LinkRuleEntry> rules = Collections.singletonList(
+                rule(SOURCE, TARGET, "manual", "fixed_deep_link"));
+        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
+                SOURCE, "enabled-conversion", true, true);
+        assertTrue(request.onlyFrozen); // An old persisted preference must not suppress the rule.
+        assertNotNull(f.worker.prepare(request, rules));
+        assertEquals(Outcome.ROUTED, f.worker.execute(request, rules).outcome);
+        assertSame(request, f.launcher.launched);
+        assertEquals("fixed_deep_link", f.launcher.conversion);
+        assertTrue(f.packages.thaws.isEmpty());
+        assertEquals(Collections.singletonList("OPENING:" + TARGET + ":0:0"), f.progress);
+        assertEquals(0, f.launcher.fallbacks);
+    }
+
+    @Test public void externalThawAfterPreflightDoesNotReturnOwnedClickToOriginalBrowser() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, FROZEN);
+        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
+                SOURCE, "external-thaw", true, true);
+        assertNotNull(f.worker.prepare(request, rules()));
+        f.packages.put(0, TARGET, READY);
+        assertEquals(Outcome.ROUTED, f.worker.execute(request, rules()).outcome);
+        assertTrue(f.packages.thaws.isEmpty());
+        assertEquals(1, f.launcher.launches);
+        assertEquals(0, f.launcher.fallbacks);
+    }
+
+    @Test public void failedEnabledRuleLaunchRestoresOwnedOriginalExactlyOnceWithoutThawing() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, READY);
+        f.launcher.failLaunch = true;
+        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
+                SOURCE, "enabled-failure", true, true);
+        AutonomousBridgeCoordinator.Result result = f.worker.execute(request, rules());
+        assertEquals(Outcome.PASSTHROUGH, result.outcome);
+        assertTrue(result.originalReplayed);
+        assertSame(request, f.launcher.fallback);
+        assertEquals(1, f.launcher.launches);
         assertEquals(1, f.launcher.fallbacks);
-        assertEquals(0, f.launcher.launches);
+        assertTrue(f.packages.thaws.isEmpty());
     }
 
     @Test public void targetMustBeInstalledForTheRequestedUser() {
@@ -198,31 +246,34 @@ public class AutonomousBridgeCoordinatorTest {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, FROZEN);
         f.packages.put(0, OTHER, FROZEN);
-        assertEquals("no-unambiguous-frozen-rule", f.worker.execute(request(Kind.WEB_RULE,
+        assertEquals("no-unambiguous-rule", f.worker.execute(request(Kind.WEB_RULE,
                 0, SOURCE, "a", true, true), Arrays.asList(rule("*", TARGET, "online", "none"),
                 rule("*", OTHER, "online", "none"))).reason);
         assertTrue(f.packages.thaws.isEmpty());
         assertEquals(1, f.launcher.fallbacks);
     }
 
-    @Test public void onlyFrozenTargetAtEqualPriorityCanBeSelected() {
+    @Test public void sharedEnabledAndFrozenTargetsRemainAmbiguousRatherThanDependingOnFreezeState() {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, FROZEN);
         f.packages.put(0, OTHER, READY);
-        assertEquals(Outcome.ROUTED, f.worker.execute(request(Kind.WEB_RULE, 0, SOURCE,
+        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.WEB_RULE, 0, SOURCE,
                 "a", false, true), Arrays.asList(rule("*", OTHER, "online", "none"),
                 rule("*", TARGET, "online", "none"))).outcome);
-        assertEquals(TARGET, f.launcher.target);
+        assertNull(f.launcher.target);
+        assertTrue(f.packages.thaws.isEmpty());
     }
 
     @Test public void installedManualRuleShadowsFrozenOnlineRuleWithoutReadingLowerPriority() {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, READY);
         f.packages.put(0, OTHER, FROZEN);
-        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.WEB_RULE, 0,
+        assertEquals(Outcome.ROUTED, f.worker.execute(request(Kind.WEB_RULE, 0,
                 SOURCE, "a", false, true), Arrays.asList(rule("*", OTHER, "online", "none"),
                 rule("*", TARGET, "manual", "none"))).outcome);
         assertEquals(Collections.singletonList("0:" + TARGET), f.packages.reads);
+        assertEquals(TARGET, f.launcher.target);
+        assertTrue(f.packages.thaws.isEmpty());
     }
 
     @Test public void uninstalledManualRuleDoesNotShadowInstalledOnlineRule() {

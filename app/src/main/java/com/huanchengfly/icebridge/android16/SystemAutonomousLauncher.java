@@ -9,10 +9,12 @@ import com.huanchengfly.icebridge.BuildConfig;
 import com.huanchengfly.icebridge.automation.AutonomousBridgeCoordinator;
 import com.huanchengfly.icebridge.automation.FluidCloudRuleCatalog;
 import com.huanchengfly.icebridge.automation.LinkRuleEntry;
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
 
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /** Launches from system_server's worker without starting any IceBridge component. */
 public final class SystemAutonomousLauncher implements AutonomousBridgeCoordinator.Launcher<Intent> {
@@ -62,15 +64,23 @@ public final class SystemAutonomousLauncher implements AutonomousBridgeCoordinat
     public SystemAutonomousLauncher(Context systemContext, String protectedPackage,
                                     IntentDecorator decorator, EventLogger logger,
                                     BooleanSupplier smallWindowEnabled) {
-        this(systemContext, protectedPackage, decorator, logger, smallWindowEnabled,
-                SystemActivityLauncher::start, SystemFreeformLaunchOptions::create);
+        this(systemContext, protectedPackage, decorator, logger, allTargets(smallWindowEnabled));
     }
 
     public SystemAutonomousLauncher(Context systemContext, String protectedPackage,
                                     IntentDecorator decorator, EventLogger logger,
                                     Predicate<String> smallWindowForTarget) {
         this(systemContext, protectedPackage, decorator, logger, smallWindowForTarget,
-                SystemActivityLauncher::start, SystemFreeformLaunchOptions::create);
+                () -> SmallWindowLayout.DEFAULT);
+    }
+
+    public SystemAutonomousLauncher(Context systemContext, String protectedPackage,
+                                    IntentDecorator decorator, EventLogger logger,
+                                    Predicate<String> smallWindowForTarget,
+                                    Supplier<SmallWindowLayout> windowLayout) {
+        this(systemContext, protectedPackage, decorator, logger, smallWindowForTarget,
+                SystemActivityLauncher::start,
+                () -> SystemFreeformLaunchOptions.create(systemContext, windowLayout.get()));
     }
 
     SystemAutonomousLauncher(Context systemContext, String protectedPackage,

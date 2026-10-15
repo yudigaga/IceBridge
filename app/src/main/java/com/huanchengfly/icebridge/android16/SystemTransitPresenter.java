@@ -1,5 +1,7 @@
 package com.huanchengfly.icebridge.android16;
 
+import android.annotation.SuppressLint;
+
 import android.app.Activity;
 import android.app.KeyguardManager;
 import android.content.BroadcastReceiver;
@@ -10,8 +12,10 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Drawable;
+import android.hardware.display.DisplayManager;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
@@ -25,6 +29,7 @@ import android.view.WindowManager;
 import android.widget.LinearLayout;
 
 import com.huanchengfly.icebridge.BuildConfig;
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -127,6 +132,11 @@ public final class SystemTransitPresenter {
 
     public void onStage(long id, int userId, String sourcePackage, String targetPackage,
                         Stage stage, int seed, String appearance) {
+        onStage(id, userId, sourcePackage, targetPackage, stage, seed, appearance, null);
+    }
+
+    public void onStage(long id, int userId, String sourcePackage, String targetPackage,
+                        Stage stage, int seed, String appearance, SmallWindowLayout smallWindowLayout) {
         if (stage == null) return;
         synchronized (settingLock) {
             VisibilitySetting requested = visibility;
@@ -134,12 +144,14 @@ public final class SystemTransitPresenter {
                 suppress(id);
                 return;
             }
-            post(() -> showStage(id, userId, sourcePackage, targetPackage, stage, seed, appearance, requested));
+            post(() -> showStage(id, userId, sourcePackage, targetPackage, stage, seed, appearance,
+                    smallWindowLayout, requested));
         }
     }
 
     private void showStage(long id, int userId, String sourcePackage, String targetPackage,
-                           Stage stage, int seed, String appearance, VisibilitySetting requested) {
+                           Stage stage, int seed, String appearance, SmallWindowLayout smallWindowLayout,
+                           VisibilitySetting requested) {
         // A disable/re-enable cycle also invalidates work already waiting in the UI queue.
         if (visibility != requested || id <= suppressedThroughId.get()) {
             suppress(id);
@@ -148,7 +160,7 @@ public final class SystemTransitPresenter {
         boolean newSession = sessions.active() == null || sessions.active().id != id;
         if (!sessions.stage(id, userId, sourcePackage, targetPackage, stage == Stage.THAWING
                 ? TransitSessionPolicy.THAWING : TransitSessionPolicy.OPENING,
-                seed, appearance, clock.uptimeMillis())) return;
+                seed, appearance, smallWindowLayout, clock.uptimeMillis())) return;
         if (!listening) {
             try {
                 registration.register(this);
@@ -306,6 +318,9 @@ public final class SystemTransitPresenter {
         private LinearLayout card;
         private TransitFlowView flow;
         private boolean attached;
+        private TransitSessionPolicy.Session visibleSession;
+        private DisplayManager displayManager;
+        private DisplayManager.DisplayListener displayListener;
 
         NativeWindowHost(Context context, IBinder previewToken) {
             suppliedContext = context;
@@ -349,29 +364,53 @@ public final class SystemTransitPresenter {
                     & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES);
             TransitSessionPolicy.Palette palette = TransitSessionPolicy.Palette.fromSeed(session.seed, dark);
             if (card == null) createCard();
-            card.setBackground(shape(palette.card, 20, palette.outline));
+            visibleSession = session;
+            card.setBackground(shape(palette.card, session.smallWindowLayout == null ? 20 : 15, palette.outline));
             AppVisual source = application(session.sourcePackage, "发起应用");
             AppVisual target = application(session.targetPackage, "目标应用");
             flow.bind(source.icon, source.label, target.icon, target.label, palette);
             String stage = session.stage == TransitSessionPolicy.THAWING ? "正在解冻" : "正在打开";
             card.setContentDescription(source.label + "，前往" + target.label + "，" + stage);
             if (!attached) {
-                WindowManager.LayoutParams params = parameters();
+                WindowManager.LayoutParams params = parameters(session);
                 manager.addView(card, params);
                 attached = true;
-            } else manager.updateViewLayout(card, parameters());
+                observeDisplay();
+            } else manager.updateViewLayout(card, parameters(session));
         }
 
-        private WindowManager.LayoutParams parameters() throws Exception {
-            int available = windowContext.getResources().getDisplayMetrics().widthPixels - dp(48);
-            int width = Math.max(dp(160), Math.min(dp(208), available));
+        // Launch bounds use physical display coordinates in both LTR and RTL locales.
+        @SuppressLint("RtlHardcoded")
+        private WindowManager.LayoutParams parameters(TransitSessionPolicy.Session session) throws Exception {
+            boolean smallWindow = session.smallWindowLayout != null;
+            Rect area = smallWindow ? SystemWindowLayout.resolve(windowContext, session.smallWindowLayout)
+                    : SystemWindowLayout.availableBounds(windowContext);
+            int preferredWidth = dp(smallWindow ? 156 : 208);
+            int preferredHeight = dp(smallWindow ? 72 : 96);
+            float shrink = Math.min(1f, Math.min(area.width() / (float) preferredWidth,
+                    area.height() / (float) preferredHeight));
+            int width = Math.max(1, Math.round(preferredWidth * shrink));
+            int height = Math.max(1, Math.round(preferredHeight * shrink));
+            card.setPadding(Math.round(dp(smallWindow ? 8 : 12) * shrink),
+                    Math.round(dp(smallWindow ? 6 : 8) * shrink),
+                    Math.round(dp(smallWindow ? 8 : 12) * shrink),
+                    Math.round(dp(smallWindow ? 6 : 8) * shrink));
+            flow.setCompactScale((smallWindow ? 0.75f : 1f) * shrink);
             WindowManager.LayoutParams params = new WindowManager.LayoutParams(width,
-                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    height,
                     previewToken != null ? WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
                             : WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT);
-            params.gravity = Gravity.CENTER;
+            // LAYOUT_IN_SCREEN gives preview panels and system dialogs the same display-coordinate frame.
+            params.gravity = Gravity.TOP | Gravity.LEFT;
+            params.x = area.left + (area.width() - width) / 2;
+            params.y = area.top + (area.height() - height) / 2;
+            if (Build.VERSION.SDK_INT >= 30) {
+                params.setFitInsetsTypes(0);
+                params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            }
             params.windowAnimations = 0;
             params.setTitle("IceBridge Transit");
             if (previewToken != null) params.token = previewToken;
@@ -383,6 +422,25 @@ public final class SystemTransitPresenter {
                 }
             }
             return params;
+        }
+
+        private void observeDisplay() {
+            if (displayListener != null) return;
+            displayManager = windowContext.getSystemService(DisplayManager.class);
+            if (displayManager == null) return;
+            DisplayManager.DisplayListener listener = new DisplayManager.DisplayListener() {
+                @Override public void onDisplayAdded(int displayId) { }
+                @Override public void onDisplayRemoved(int displayId) { }
+                @Override public void onDisplayChanged(int displayId) {
+                    if (!attached || visibleSession == null) return;
+                    try { manager.updateViewLayout(card, parameters(visibleSession)); }
+                    catch (Throwable ignored) {
+                        try { dismiss(); } catch (Throwable ignoredRemoval) { }
+                    }
+                }
+            };
+            displayManager.registerDisplayListener(listener, card.getHandler());
+            displayListener = listener;
         }
 
         private void createCard() {
@@ -440,9 +498,18 @@ public final class SystemTransitPresenter {
         }
 
         @Override public void dismiss() {
-            if (attached && card != null && manager != null) {
-                try { manager.removeViewImmediate(card); }
-                finally { attached = false; }
+            visibleSession = null;
+            DisplayManager.DisplayListener listener = displayListener;
+            displayListener = null;
+            try {
+                if (listener != null && displayManager != null) {
+                    displayManager.unregisterDisplayListener(listener);
+                }
+            } finally {
+                if (attached && card != null && manager != null) {
+                    try { manager.removeViewImmediate(card); }
+                    finally { attached = false; }
+                }
             }
         }
     }

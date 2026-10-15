@@ -29,6 +29,7 @@ import com.huanchengfly.icebridge.automation.LinkRuleEntry;
 import com.huanchengfly.icebridge.automation.OnlineLinkRuleRepository;
 import com.huanchengfly.icebridge.automation.ScopedRuleResolver;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
 import com.huanchengfly.icebridge.databases.AppConfig;
 import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
 import com.huanchengfly.icebridge.ui.theme.ThemePreferencesStore;
@@ -172,10 +173,14 @@ public class ConfigProvider extends ContentProvider {
                     SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, java.util.Collections.emptySet())
                     .toArray(new String[0]);
             snapshot.putStringArray(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, smallWindowPackages);
+            SmallWindowLayout smallWindowLayout = SmallWindowLayout.parse(
+                    preferences.getString(SystemServerConfigContract.KEY_SMALL_WINDOW_LAYOUT, null));
+            snapshot.putIntArray(SystemServerConfigContract.KEY_SMALL_WINDOW_LAYOUT, new int[]{
+                    smallWindowLayout.widthPercent, smallWindowLayout.heightPercent,
+                    smallWindowLayout.horizontalPercent, smallWindowLayout.verticalPercent});
             boolean autonomous = preferences.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false);
             snapshot.putBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, autonomous);
-            snapshot.putBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN,
-                    preferences.getBoolean(LinkAutomationConfig.KEY_ONLY_FROZEN, true));
+            snapshot.putBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN, false);
             snapshot.putBoolean(SystemServerConfigContract.KEY_BROWSER_FALLBACK,
                     preferences.getBoolean(LinkAutomationConfig.KEY_BROWSER_FALLBACK, true));
             snapshot.putBoolean(SystemServerConfigContract.KEY_ONLINE_UPDATES, OnlineLinkRuleRepository.isEnabled(getContext()));
@@ -239,7 +244,8 @@ public class ConfigProvider extends ContentProvider {
                     snapshot.getBoolean(SystemServerConfigContract.KEY_BROWSER_FALLBACK),
                     snapshot.getBoolean(SystemServerConfigContract.KEY_ONLINE_UPDATES), rules,
                     new SystemRuntimeConfig.OnlineState("", "", "", "", onlineRevision, onlineSha256, onlineRevision > 0),
-                    theme.getSeedColor(), theme.getAppearance(), transitCard, smallWindow, smallWindowPackages);
+                    theme.getSeedColor(), theme.getAppearance(), transitCard, smallWindow, smallWindowPackages,
+                    smallWindowLayout);
             String fingerprint = SystemRuntimeConfig.fingerprint(baseline);
             snapshot.putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, fingerprint);
             SharedPreferences status = runtimeStatus();

@@ -1,6 +1,7 @@
 package com.huanchengfly.icebridge;
 
 import com.huanchengfly.icebridge.ui.theme.ThemePolicy;
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 
 import org.junit.Test;
@@ -239,6 +240,29 @@ public class SystemServerConfigContractTest {
                 SystemServerConfigContract.STATUS_OK, null, true, true, true, true, true,
                 null, null, 0, true, true, true, true, 0, "", repeat('b', 64),
                 0xff00796b, ThemePolicy.APPEARANCE_LIGHT, true, true, packages);
+    }
+
+    @Test public void adjustedWindowGeometryReachesPersistentStateAndLegacyOverloadsKeepCenteredDefaults() throws Exception {
+        assertEquals(SmallWindowLayout.DEFAULT, selected(new String[]{"com.example.reader"}).smallWindowLayout);
+        SmallWindowLayout layout = new SmallWindowLayout(52, 43, 100, 0);
+        SystemServerConfigContract.Snapshot snapshot = SystemServerConfigContract.parseValues(
+                SystemServerConfigContract.SCHEMA_VERSION, SystemServerConfigContract.STATUS_OK, null,
+                true, true, true, true, true, null, null, 0, true, false, true, true,
+                0, "", repeat('b', 64), 0xff00796b, ThemePolicy.APPEARANCE_LIGHT,
+                true, true, new String[]{"com.example.reader"}, layout);
+        assertTrue(snapshot.available);
+        assertEquals(layout, snapshot.smallWindowLayout);
+        assertEquals(layout, snapshot.toRuntimeState(123).smallWindowLayout);
+        assertTrue(snapshot.toRuntimeState(123).openLinksInSmallWindow);
+        assertFalse(snapshot.toRuntimeState(123).onlyFrozen);
+        assertEquals(snapshot.smallWindowPackages, snapshot.toRuntimeState(123).smallWindowPackages);
+        SystemServerConfigContract.Snapshot malformed = SystemServerConfigContract.parseValues(
+                SystemServerConfigContract.SCHEMA_VERSION, SystemServerConfigContract.STATUS_OK, null,
+                true, true, true, true, true, null, null, 0, true, false, true, true,
+                0, "", repeat('b', 64), 0xff00796b, ThemePolicy.APPEARANCE_LIGHT,
+                true, true, new String[]{"com.example.reader"}, null);
+        assertFalse(malformed.available);
+        assertEquals("small-window-layout-invalid", malformed.status);
     }
 
     @Test public void invalidTransitAppearanceAndTranslucentSeedCannotEnterRuntime() {

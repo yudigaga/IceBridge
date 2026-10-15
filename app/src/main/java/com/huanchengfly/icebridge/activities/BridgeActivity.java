@@ -265,8 +265,9 @@ public class BridgeActivity extends BaseActivity {
     private boolean matchesNativeRule(String target, Uri uri, String sourcePackage) {
         List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(
                 RuleConfigRepository.installedRuleEntries(this), sourcePackage, uri.getHost());
-        LinkRuleEntry selected = ScopedRuleResolver.selectFrozenRule(matches, java.util.Collections.singleton(target));
-        if (selected == null) return false;
+        LinkRuleEntry selected = ScopedRuleResolver.selectRule(matches,
+                new java.util.HashSet<>(ScopedRuleResolver.targetPackages(matches)));
+        if (selected == null || !target.equals(selected.targetPackage)) return false;
         String transportedConversion = getIntent().getStringExtra("rule_conversion");
         if (!selected.urlConversion.equals(transportedConversion)) return false;
         nativeRuleConversion = selected.urlConversion;

@@ -15,6 +15,7 @@ import com.huanchengfly.icebridge.automation.OwnedLaunchTransaction;
 import com.huanchengfly.icebridge.automation.SystemOnlineRuleClient;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfigStore;
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
 
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
@@ -95,6 +96,9 @@ public final class SystemAutonomousRuntime {
                             SystemRuntimeConfig.State latest = current(0);
                             return latest != null && latest.openLinksInSmallWindow
                                     && latest.smallWindowPackages.contains(target);
+                        }, () -> {
+                            SystemRuntimeConfig.State latest = current(0);
+                            return latest == null ? SmallWindowLayout.DEFAULT : latest.smallWindowLayout;
                         }),
                 SystemClock::elapsedRealtime, (request, target, stage) -> {
                     TransitTrace trace = workerTrace;
@@ -183,7 +187,8 @@ public final class SystemAutonomousRuntime {
                         + incoming.scopedRules.size() + ", revision=" + incoming.online.highestRevision
                         + ", transitCard=" + incoming.transitCardEnabled
                         + ", smallWindow=" + incoming.openLinksInSmallWindow
-                        + ", smallWindowTargets=" + incoming.smallWindowPackages.size());
+                        + ", smallWindowTargets=" + incoming.smallWindowPackages.size()
+                        + ", smallWindowLayout=" + incoming.smallWindowLayout.encode());
             }
         } catch (IOException error) {
             message = "系统配置保存失败：" + error.getMessage();
@@ -230,10 +235,7 @@ public final class SystemAutonomousRuntime {
                     || (original.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION
                     | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                     | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION | Intent.FLAG_ACTIVITY_FORWARD_RESULT)) != 0) return null;
-            NativeActivityLinkCapture.CapturedLink source = NativeActivityLinkCapture.capture(original);
-            if (source == null || !request.sourcePackage.equals(source.sourcePackage)
-                    || request.payload.getData() == null
-                    || !source.url.equals(request.payload.getData().toString())) return null;
+            if (!SystemAutonomousCapture.matchesOwnedWebSource(original, request)) return null;
             Uri originalData = original.getData();
             if (originalData != null && ("content".equalsIgnoreCase(originalData.getScheme())
                     || "file".equalsIgnoreCase(originalData.getScheme()))) return null;
@@ -242,7 +244,7 @@ public final class SystemAutonomousRuntime {
             if (request == null) return null;
             long identity = Binder.clearCallingIdentity();
             try {
-                int sourceUid = context.getPackageManager().getApplicationInfo(source.sourcePackage, 0).uid;
+                int sourceUid = context.getPackageManager().getApplicationInfo(request.sourcePackage, 0).uid;
                 if (sourceUid != callingUid) return null;
                 ActivityManager activityManager = context.getSystemService(ActivityManager.class);
                 Object importance = activityManager == null || uidImportance == null ? null
@@ -458,7 +460,9 @@ public final class SystemAutonomousRuntime {
             transit.onStage(trace.id, trace.userId, trace.sourcePackage, target,
                     stage == AutonomousBridgeCoordinator.Stage.THAWING
                             ? SystemTransitPresenter.Stage.THAWING : SystemTransitPresenter.Stage.OPENING,
-                    trace.state.transitSeedColor, trace.state.transitAppearance);
+                    trace.state.transitSeedColor, trace.state.transitAppearance,
+                    latest.openLinksInSmallWindow && latest.smallWindowPackages.contains(target)
+                            ? latest.smallWindowLayout : null);
         }
         traceLog(trace, stage == AutonomousBridgeCoordinator.Stage.THAWING ? "thawing" : "opening", now);
     }

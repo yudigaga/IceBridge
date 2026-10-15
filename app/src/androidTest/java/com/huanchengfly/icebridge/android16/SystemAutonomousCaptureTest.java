@@ -1,8 +1,10 @@
 package com.huanchengfly.icebridge.android16;
 
 import android.content.ComponentName;
+import android.content.ClipData;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 
 import com.huanchengfly.icebridge.automation.AutonomousBridgeCoordinator;
 import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
@@ -63,6 +65,113 @@ public class SystemAutonomousCaptureTest {
         assertTrue(result.recognizedSource);
         assertNull(result.request);
         assertEquals("no-rule", result.reason);
+    }
+
+    @Test public void ordinaryPublicViewRuleCanBeOwnedRegardlessOfLegacyFrozenOnlyPreference() throws Exception {
+        Intent original = new Intent(Intent.ACTION_VIEW, Uri.parse(URL))
+                .addCategory(Intent.CATEGORY_BROWSABLE);
+        SystemAutonomousCapture.Result result = SystemAutonomousCapture.capture(original, 0,
+                configuration(WECHAT), WECHAT, true, -1);
+        assertNotNull(result.request);
+        assertTrue(result.request.onlyFrozen);
+        assertTrue(SystemAutonomousCapture.matchesOwnedWebSource(original, result.request));
+        assertEquals(WECHAT, result.request.sourcePackage);
+        assertNull(result.request.payload.getPackage());
+        assertEquals(URL, original.getDataString());
+    }
+
+    @Test public void knownPrivateCarrierCanBeOwnedButRetainsItsUnmodifiedSourcePayload() throws Exception {
+        Intent original = webView(WECHAT);
+        AutonomousBridgeCoordinator.Request<Intent> request = SystemAutonomousCapture.capture(original, 0,
+                configuration(WECHAT), WECHAT, true, -1).request;
+        assertTrue(SystemAutonomousCapture.matchesOwnedWebSource(original, request));
+        assertEquals("source-private", original.getStringExtra("private_marker"));
+        assertNull(request.payload.getExtras());
+    }
+
+    @Test public void opaquePublicViewExtrasAndExplicitInternalActivitiesKeepOriginalCallerChain() throws Exception {
+        Intent plain = new Intent(Intent.ACTION_VIEW, Uri.parse(URL));
+        AutonomousBridgeCoordinator.Request<Intent> request = SystemAutonomousCapture.capture(plain, 0,
+                configuration(WECHAT), WECHAT, true, -1).request;
+        assertNotNull(request);
+        assertFalse(SystemAutonomousCapture.matchesOwnedWebSource(
+                new Intent(plain).putExtra("callback", "caller-private"), request));
+        assertFalse(SystemAutonomousCapture.matchesOwnedWebSource(
+                new Intent(plain).setPackage(WECHAT), request));
+        assertFalse(SystemAutonomousCapture.matchesOwnedWebSource(new Intent(plain)
+                .setComponent(new ComponentName(WECHAT, "com.tencent.mm.InternalActivity")), request));
+        assertFalse(SystemAutonomousCapture.matchesOwnedWebSource(
+                new Intent(plain).setType("text/html").setDataAndType(Uri.parse(URL), "text/html"), request));
+    }
+
+    @Test public void grantsSelectorsAndClipDataCannotBeReassignedToModuleOwnedRoute() throws Exception {
+        Intent original = new Intent(Intent.ACTION_VIEW, Uri.parse(URL));
+        AutonomousBridgeCoordinator.Request<Intent> request = SystemAutonomousCapture.capture(original, 0,
+                configuration(WECHAT), WECHAT, true, -1).request;
+        for (int flag : new int[]{Intent.FLAG_GRANT_READ_URI_PERMISSION, Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION, Intent.FLAG_GRANT_PREFIX_URI_PERMISSION,
+                Intent.FLAG_ACTIVITY_FORWARD_RESULT}) {
+            Intent granted = new Intent(original).addFlags(flag);
+            assertFalse(SystemAutonomousCapture.matchesOwnedWebSource(granted, request));
+            assertNull(SystemAutonomousCapture.capture(granted, 0, configuration(WECHAT), WECHAT, true, -1).request);
+        }
+        Intent selected = new Intent(original);
+        selected.setSelector(new Intent(Intent.ACTION_VIEW, Uri.parse(URL)));
+        assertFalse(SystemAutonomousCapture.matchesOwnedWebSource(selected, request));
+        assertNull(SystemAutonomousCapture.capture(selected, 0, configuration(WECHAT), WECHAT, true, -1).request);
+        Intent clipped = new Intent(original);
+        clipped.setClipData(ClipData.newPlainText("private", "caller-private"));
+        assertFalse(SystemAutonomousCapture.matchesOwnedWebSource(clipped, request));
+        assertNull(SystemAutonomousCapture.capture(clipped, 0, configuration(WECHAT), WECHAT, true, -1).request);
+    }
+
+    @Test public void ordinaryPublicViewForResultAndUnmatchedHostStayWithAndroid() throws Exception {
+        Intent original = new Intent(Intent.ACTION_VIEW, Uri.parse(URL));
+        assertNull(SystemAutonomousCapture.capture(original, 0, configuration(WECHAT), WECHAT, true, 5).request);
+        assertNull(SystemAutonomousCapture.capture(original, 0, configuration(WECHAT), WECHAT, true, null).request);
+        Intent unmatched = new Intent(Intent.ACTION_VIEW, Uri.parse("https://unmatched.example/fixture"));
+        assertNull(SystemAutonomousCapture.capture(unmatched, 0, configuration(WECHAT), WECHAT, true, -1).request);
+        assertEquals(URL, original.getDataString());
+    }
+
+    @Test public void legacyWebViewBridgeUsesSameCallerPayloadBoundaryWithExactNoResultCode() throws Exception {
+        Intent original = webView(WECHAT);
+        assertTrue(NativeBridgePolicy.canReplaceWebSource(-1,
+                SystemAutonomousCapture.hasCallerBoundPayload(original)));
+        for (Integer resultCode : new Integer[]{0, 42, null}) {
+            assertFalse(NativeBridgePolicy.canReplaceWebSource(resultCode,
+                    SystemAutonomousCapture.hasCallerBoundPayload(original)));
+        }
+        for (int flag : new int[]{Intent.FLAG_GRANT_READ_URI_PERMISSION, Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION, Intent.FLAG_GRANT_PREFIX_URI_PERMISSION,
+                Intent.FLAG_ACTIVITY_FORWARD_RESULT}) {
+            assertFalse(NativeBridgePolicy.canReplaceWebSource(-1,
+                    SystemAutonomousCapture.hasCallerBoundPayload(new Intent(original).addFlags(flag))));
+        }
+        Intent clipped = new Intent(original);
+        clipped.setClipData(ClipData.newPlainText("private", "caller-private"));
+        assertFalse(NativeBridgePolicy.canReplaceWebSource(-1,
+                SystemAutonomousCapture.hasCallerBoundPayload(clipped)));
+        Intent selected = new Intent(original);
+        selected.setSelector(new Intent(Intent.ACTION_VIEW, Uri.parse(URL)));
+        assertFalse(NativeBridgePolicy.canReplaceWebSource(-1,
+                SystemAutonomousCapture.hasCallerBoundPayload(selected)));
+        assertEquals("source-private", original.getStringExtra("private_marker"));
+    }
+
+    @Test public void fileDescriptorsCannotEnterEitherLegacyBridgeOrIndependentCapture() throws Exception {
+        ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
+        try {
+            Intent original = webView(WECHAT).putExtra("caller-fd", pipe[0]);
+            assertTrue(original.hasFileDescriptors());
+            assertFalse(NativeBridgePolicy.canReplaceWebSource(-1,
+                    SystemAutonomousCapture.hasCallerBoundPayload(original)));
+            assertNull(SystemAutonomousCapture.capture(original, 0,
+                    configuration(WECHAT), WECHAT, true, -1).request);
+        } finally {
+            pipe[0].close();
+            pipe[1].close();
+        }
     }
 
     private static void assertWebObservation(Intent original, String source, boolean hasResultTo,

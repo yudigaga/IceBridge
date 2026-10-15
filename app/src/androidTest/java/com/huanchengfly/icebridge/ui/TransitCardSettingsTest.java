@@ -5,7 +5,9 @@ import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Rect;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -28,6 +30,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.io.IOException;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Predicate;
 
 import static org.junit.Assert.*;
@@ -361,51 +365,123 @@ public class TransitCardSettingsTest {
     }
 
     private static void clickSwitch(Instrumentation instrumentation, String label) {
-        AccessibilityNodeInfo control = findVisibleSwitch(instrumentation, label);
-        try {
-            assertTrue("The opt-in switch must accept a real user click",
-                    control.performAction(AccessibilityNodeInfo.ACTION_CLICK));
-        } finally { control.recycle(); }
+        AccessibilityNodeInfo revealed = findVisibleSwitch(instrumentation, label);
+        revealed.recycle();
+        long deadline = SystemClock.uptimeMillis() + 5_000L;
+        boolean clicked = false;
+        do {
+            instrumentation.waitForIdleSync();
+            try { instrumentation.getUiAutomation().waitForIdle(200L, 1_000L); }
+            catch (TimeoutException ignored) { /* Re-query the node after any pending scroll frame. */ }
+            AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
+            if (root == null) continue;
+            try {
+                AccessibilityNodeInfo control = findSwitch(root, label);
+                if (control == null) continue;
+                try {
+                    if (control.refresh() && control.isVisibleToUser() && control.isEnabled()) {
+                        clicked = control.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    }
+                } finally { control.recycle(); }
+            } finally { root.recycle(); }
+        } while (!clicked && SystemClock.uptimeMillis() < deadline);
+        assertTrue("The opt-in switch must accept a fresh user click: " + label, clicked);
         instrumentation.waitForIdleSync();
     }
 
     private static AccessibilityNodeInfo findVisibleSwitch(Instrumentation instrumentation, String label) {
         long deadline = SystemClock.uptimeMillis() + 10_000L;
+        int revealAttempts = 0;
+        boolean forward = true;
         do {
             AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
             if (root != null) {
                 try {
                     AccessibilityNodeInfo control = findSwitch(root, label);
                     if (control != null) return control;
-                    AccessibilityNodeInfo scroll = findNode(root, AccessibilityNodeInfo::isScrollable);
-                    if (scroll != null) {
-                        try { scroll.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD); }
-                        finally { scroll.recycle(); }
+                    // A full-page accessibility scroll can split the row across page edges.
+                    // Compose exposes offscreen semantics, so ask the exact switch to reveal itself.
+                    AccessibilityNodeInfo hidden = findSwitch(root, label, false);
+                    boolean revealing = false;
+                    if (hidden != null) {
+                        try {
+                            if (revealAttempts++ < 2) revealing = hidden.performAction(
+                                    AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.getId());
+                        } finally { hidden.recycle(); }
+                    }
+                    if (!revealing) {
+                        AccessibilityNodeInfo scroll = findNode(root,
+                                node -> node.isVisibleToUser() && node.isScrollable());
+                        if (scroll != null) {
+                            try {
+                                boolean canForward = scroll.getActionList().contains(
+                                        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD);
+                                boolean canBackward = scroll.getActionList().contains(
+                                        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD);
+                                if (forward && !canForward && canBackward) forward = false;
+                                else if (!forward && !canBackward && canForward) forward = true;
+                                if (canForward || canBackward) swipeHalfViewport(instrumentation, scroll, forward);
+                            } finally { scroll.recycle(); }
+                        }
                     }
                 } finally { root.recycle(); }
             }
             instrumentation.waitForIdleSync();
-            SystemClock.sleep(100L);
+            try { instrumentation.getUiAutomation().waitForIdle(150L, 1_000L); }
+            catch (TimeoutException ignored) { /* The overall search deadline still bounds animations. */ }
         } while (SystemClock.uptimeMillis() < deadline);
         throw new AssertionError("The setting switch did not become visible: " + label);
     }
 
+    /** Use the observed ScrollView rectangle, with overlap so a row cannot be skipped. */
+    private static void swipeHalfViewport(Instrumentation instrumentation, AccessibilityNodeInfo scroll,
+                                          boolean forward) {
+        Rect bounds = new Rect();
+        scroll.getBoundsInScreen(bounds);
+        if (bounds.width() < 2 || bounds.height() < 4) return;
+        int x = bounds.centerX();
+        int upper = bounds.top + bounds.height() / 4;
+        int lower = bounds.top + bounds.height() * 3 / 4;
+        String command = "input swipe " + x + " " + (forward ? lower : upper) + " " + x + " "
+                + (forward ? upper : lower) + " 350";
+        try (ParcelFileDescriptor.AutoCloseInputStream completed = new ParcelFileDescriptor.AutoCloseInputStream(
+                instrumentation.getUiAutomation().executeShellCommand(command))) {
+            byte[] buffer = new byte[256];
+            while (completed.read(buffer) != -1) { /* Await the actual gesture's completion. */ }
+        } catch (IOException failure) {
+            throw new AssertionError("The observed settings viewport could not be scrolled", failure);
+        }
+    }
+
     /** Select the smallest semantics subtree containing both this label and its checkable control. */
     private static AccessibilityNodeInfo findSwitch(AccessibilityNodeInfo node, String expectedLabel) {
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo child = node.getChild(i);
-            if (child != null) {
-                try {
-                    AccessibilityNodeInfo result = findSwitch(child, expectedLabel);
-                    if (result != null) return result;
-                } finally { child.recycle(); }
-            }
-        }
-        AccessibilityNodeInfo label = findNode(node,
-                item -> item.isVisibleToUser() && expectedLabel.contentEquals(item.getText() == null ? "" : item.getText()));
+        return findSwitch(node, expectedLabel, true);
+    }
+
+    private static AccessibilityNodeInfo findSwitch(AccessibilityNodeInfo node, String expectedLabel,
+                                                     boolean visibleOnly) {
+        AccessibilityNodeInfo label = findNode(node, item ->
+                expectedLabel.contentEquals(item.getText() == null ? "" : item.getText()));
         if (label == null) return null;
-        label.recycle();
-        return findNode(node, item -> item.isVisibleToUser() && item.isCheckable() && item.isClickable());
+        boolean labelVisible = label.isVisibleToUser();
+        AccessibilityNodeInfo current = label;
+        while (current != null) {
+            AccessibilityNodeInfo parent = null;
+            try {
+                // First bind the label to its closest row, including a currently clipped switch.
+                // Never climb into the whole Card and substitute another visible row's switch.
+                AccessibilityNodeInfo control = findNode(current,
+                        item -> item.isCheckable() && item.isClickable());
+                if (control != null) {
+                    if (!visibleOnly || labelVisible && control.isVisibleToUser()) return control;
+                    control.recycle();
+                    return null;
+                }
+                parent = current.getParent();
+            } finally { current.recycle(); }
+            current = parent;
+        }
+        return null;
     }
 
     private static AccessibilityNodeInfo findNode(AccessibilityNodeInfo node,

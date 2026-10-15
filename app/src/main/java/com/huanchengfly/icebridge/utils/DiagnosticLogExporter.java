@@ -106,7 +106,8 @@ public final class DiagnosticLogExporter {
             append(stream, "openLinksInSmallWindow=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW, false) + "\n");
             append(stream, "smallWindowTargets=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getStringSet(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, java.util.Collections.emptySet()).size() + "\n");
             append(stream, "paymentSdkBridge=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("payment_sdk_bridge", true) + "\n");
-            append(stream, "onlyFrozenLinkTargets=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("only_frozen_link_targets", true) + "\n");
+            append(stream, "matchedRuleTargetsAlwaysRouted=true\n");
+            append(stream, "smallWindowLayout=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getString(SystemServerConfigContract.KEY_SMALL_WINDOW_LAYOUT, "70,60,50,50") + "\n");
             append(stream, "browserFallback=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("link_browser_fallback", true) + "\n");
             append(stream, "clipboardAutoOpen=" + context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getBoolean("clipboard_auto_open", false) + "\n");
             append(stream, "onlineRules=" + OnlineLinkRuleRepository.diagnosticSummary(context) + "\n");

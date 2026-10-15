@@ -5,11 +5,13 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.graphics.Rect;
 import android.os.Bundle;
 
 import androidx.test.InstrumentationRegistry;
 
 import com.huanchengfly.icebridge.automation.AutonomousBridgeCoordinator;
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
 
 import org.junit.Test;
 
@@ -26,6 +28,19 @@ public class SystemFreeformLaunchTest {
     private static final String SELF = "io.github.yudigaga.icebridge";
     private static final String SOURCE = "com.tencent.mm";
     private static final String TARGET = "com.example.target";
+
+    @Test public void configuredBoundsSurviveTheNativeOptionsBundle() throws Exception {
+        Context context = InstrumentationRegistry.getTargetContext();
+        SmallWindowLayout layout = new SmallWindowLayout(85, 45, 15, 80);
+        Rect expected = SystemWindowLayout.resolve(context, layout);
+        Bundle bundle = SystemFreeformLaunchOptions.create(context, layout);
+        ActivityOptions restored = (ActivityOptions) ActivityOptions.class
+                .getMethod("fromBundle", Bundle.class).invoke(null, bundle);
+        assertEquals(expected, restored.getLaunchBounds());
+        assertEquals(5, ActivityOptions.class.getMethod("getLaunchWindowingMode").invoke(restored));
+        Rect available = SystemWindowLayout.availableBounds(context);
+        assertTrue(available.contains(restored.getLaunchBounds()));
+    }
 
     @Test public void platformOptionsRoundTripAsFreeformWithRomSelectedBounds() throws Exception {
         Bundle bundle = SystemFreeformLaunchOptions.create();

@@ -55,13 +55,18 @@ public final class ScopedRuleResolver {
         return Collections.unmodifiableList(new ArrayList<>(targets));
     }
 
-    /** Only the highest matching priority group may claim a frozen target. */
+    /** Compatibility entry point for callers that deliberately select only frozen candidates. */
     public static LinkRuleEntry selectFrozenRule(List<LinkRuleEntry> matches, Set<String> frozenPackages) {
-        if (matches == null || matches.isEmpty() || frozenPackages == null) return null;
+        return selectRule(matches, frozenPackages);
+    }
+
+    /** Only one eligible target in the highest matching priority group may own a public link. */
+    public static LinkRuleEntry selectRule(List<LinkRuleEntry> matches, Set<String> eligiblePackages) {
+        if (matches == null || matches.isEmpty() || eligiblePackages == null) return null;
         LinkRuleEntry first = matches.get(0), selected = null;
         for (LinkRuleEntry rule : matches) {
             if (!samePriority(first, rule)) break;
-            if (!frozenPackages.contains(rule.targetPackage)) continue;
+            if (!eligiblePackages.contains(rule.targetPackage)) continue;
             if (selected != null && !selected.targetPackage.equals(rule.targetPackage)) return null;
             if (selected == null) selected = rule;
         }

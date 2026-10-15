@@ -175,7 +175,8 @@ public class SystemOnlineRuleClientTest {
                 state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
                 state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
                 state.onlineUpdatesEnabled, state.encodedRules(), state.online, state.transitSeedColor,
-                state.transitAppearance, state.transitCardEnabled, state.openLinksInSmallWindow, selected);
+                state.transitAppearance, state.transitCardEnabled, state.openLinksInSmallWindow, selected,
+                state.smallWindowLayout);
     }
 
     private static SystemRuntimeConfig.State smallWindowState(SystemRuntimeConfig.State state,
@@ -184,7 +185,8 @@ public class SystemOnlineRuleClientTest {
                 state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
                 state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
                 state.onlineUpdatesEnabled, state.encodedRules(), state.online, state.transitSeedColor,
-                state.transitAppearance, state.transitCardEnabled, enabled, state.smallWindowPackages.toArray(new String[0]));
+                state.transitAppearance, state.transitCardEnabled, enabled,
+                state.smallWindowPackages.toArray(new String[0]), state.smallWindowLayout);
     }
 
     private static SystemRuntimeConfig.State cardState(SystemRuntimeConfig.State state,
@@ -193,7 +195,8 @@ public class SystemOnlineRuleClientTest {
                 state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
                 state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
                 state.onlineUpdatesEnabled, state.encodedRules(), state.online, state.transitSeedColor,
-                state.transitAppearance, enabled, state.openLinksInSmallWindow, state.smallWindowPackages.toArray(new String[0]));
+                state.transitAppearance, enabled, state.openLinksInSmallWindow,
+                state.smallWindowPackages.toArray(new String[0]), state.smallWindowLayout);
     }
 
     private static SystemRuntimeConfig.State themedState(SystemRuntimeConfig.State state,
@@ -202,7 +205,50 @@ public class SystemOnlineRuleClientTest {
                 state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
                 state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
                 state.onlineUpdatesEnabled, state.encodedRules(), state.online, seedColor, appearance,
-                state.transitCardEnabled, state.openLinksInSmallWindow, state.smallWindowPackages.toArray(new String[0]));
+                state.transitCardEnabled, state.openLinksInSmallWindow,
+                state.smallWindowPackages.toArray(new String[0]), state.smallWindowLayout);
+    }
+
+    @Test public void providerWindowGeometryReplacesRetainedGeometryWithoutRollingBackOnlineRules() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        SystemRuntimeConfig.State retained = layoutState(state(true, latest.rules, cache(latest)),
+                new SmallWindowLayout(70, 60, 0, 0));
+        SmallWindowLayout requested = new SmallWindowLayout(45, 40, 100, 75);
+        SystemRuntimeConfig.State incoming = layoutState(state(true,
+                rules(manual("manual.example.com"), online("old.example.com")), metadata(old)), requested);
+        SystemRuntimeConfig.State merged = SystemOnlineRuleClient.mergeProvider(incoming, retained);
+        assertEquals(requested, merged.smallWindowLayout);
+        assertEquals(4, merged.online.highestRevision);
+        assertEquals(latest.raw, merged.online.activeRaw);
+        assertEquals("manual.example.com", merged.scopedRules.get(0).host);
+        assertEquals("new.example.com", merged.scopedRules.get(1).host);
+    }
+
+    @Test public void downloadRebasesOntoGeometryChangedWhileHttpWasRunning() throws Exception {
+        OnlineRuleBundle old = bundle(3, "old.example.com"), latest = bundle(4, "new.example.com");
+        SystemRuntimeConfig.State before = selectedState(smallWindowState(cardState(
+                state(true, old.rules, cache(old)), true), true), new String[]{"com.example.reader"});
+        SystemOnlineRuleClient.Result downloaded = new SystemOnlineRuleClient.Result(before, latest);
+        SmallWindowLayout requested = new SmallWindowLayout(45, 40, 100, 75);
+        SystemRuntimeConfig.State edited = layoutState(before, requested);
+        SystemRuntimeConfig.State after = downloaded.applyTo(edited, 200);
+        assertEquals(requested, after.smallWindowLayout);
+        assertEquals(edited.smallWindowPackages, after.smallWindowPackages);
+        assertTrue(after.openLinksInSmallWindow);
+        assertTrue(after.transitCardEnabled);
+        assertEquals(latest.raw, after.online.activeRaw);
+        assertEquals(old.raw, after.online.backupRaw);
+        assertEquals(4, after.online.highestRevision);
+    }
+
+    private static SystemRuntimeConfig.State layoutState(SystemRuntimeConfig.State state,
+                                                         SmallWindowLayout layout) throws IOException {
+        return new SystemRuntimeConfig.State(state.providerSchemaVersion, state.userId, state.savedAtEpochMillis,
+                state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
+                state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
+                state.onlineUpdatesEnabled, state.encodedRules(), state.online, state.transitSeedColor,
+                state.transitAppearance, state.transitCardEnabled, state.openLinksInSmallWindow,
+                state.smallWindowPackages.toArray(new String[0]), layout);
     }
 
     @Test public void providerCurrentRevisionDoesNotGetReplacedByRetainedOlderBackup() throws Exception {

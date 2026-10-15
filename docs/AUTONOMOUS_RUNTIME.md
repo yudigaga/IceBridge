@@ -2,7 +2,7 @@
 
 0.0.82 增加可选的系统独立运行模式。IceBridge 被 IceBox 禁用或隐藏后，已注入 `system_server` 的模块使用系统保存的配置处理链接、剪贴板、支付预解冻和在线规则更新，整个处理过程不需要解冻或启动 IceBridge 本体。
 
-推荐使用 0.0.87 或更新版本。0.0.83 修复普通微信／QQ 跳转的来源令牌误判；0.0.85 接管原始 WebView 点击；0.0.86 缩小卡片，仅保留图标和流线，并在目标启动画面／应用窗口展示时收起，不再等待内容加载；0.0.87 新增默认关闭、相互独立的卡片和小窗开关。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)和[卡片及计时](TRANSIT_PROGRESS.md)说明了具体行为。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
+推荐使用 0.0.88 或更新版本。0.0.83 修复普通微信／QQ 跳转的来源令牌误判；0.0.85 接管原始 WebView 点击；0.0.86 在目标启动画面／应用窗口展示时收卡；0.0.87 增加卡片和指定应用小窗开关；0.0.88 增加带预览的尺寸位置设置、小窗内紧凑卡片，并让规则命中后的路由不再受目标冻结状态限制。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)和[卡片及计时](TRANSIT_PROGRESS.md)说明了具体行为。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
 
 当前只接收用户 0 的配置。工作资料和其他用户不会继承该配置；目标被挂起（suspended）、卸载或状态无法确认时不解冻。实际 ROM 的系统接口、SELinux 和冻结后重启注入仍需单独验收。
 
@@ -18,11 +18,15 @@
 
 “跳转行为 → 小窗打开”也默认关闭，与卡片开关互不依赖。点击“小窗应用”搜索并勾选目标，确认后才保存；取消不会改变已保存的名单。开启总开关后，只有被勾选且由独立模式接管的普通链接目标请求系统小窗，未选应用及空名单仍按普通方式打开。被冻结或暂不可见的规则目标仍可选择，已保存的暂不可见包名也保留并可取消选择。最多选择 512 个目标；顺序和重复包名不改变配置身份，修改名单会撤销旧的系统确认。
 
-小窗使用系统默认尺寸和位置，不修改全局多窗口或强制调整应用大小设置。支付 SDK、真实结果调用、仅预解冻的原始启动链及原网页回放不附加小窗参数；剪贴板跳转失败后的浏览器回退也保留普通方式。关闭后后续请求不再附加小窗选项，不强行改变已经打开的任务。
+“小窗尺寸与位置”提供四个滑杆：宽度 30～95%、高度 25～95%、水平和垂直位置 0～100%。预览立即响应，保存前只修改草稿；“恢复默认”同样先预览，点击“保存设置”后才同步。默认宽度 70%、高度 60%，水平和垂直居中。尺寸按排除系统栏与刘海的可用显示区域计算，位置按剩余移动范围计算，确保请求范围不越界；横竖屏重新计算。该布局统一用于已选的小窗目标，系统仍可调整最终大小和位置。
+
+命中普通链接规则时，目标已启用也由模块打开，冻结时才执行解冻。旧“仅处理被冻结的应用”设置不再限制规则路径，界面移除该开关；同优先级多个不同目标继续判为歧义，不按冻结状态选择目标。除既有微信／QQ 载荷外，身份和前台状态可确认、没有私有载荷／授权的隐式 HTTP(S) `ACTION_VIEW` 也可以独占接管，避免与原浏览器并行启动。
+
+不修改全局多窗口或强制调整应用大小设置。支付 SDK、真实结果调用、仅预解冻的原始启动链及原网页回放不附加小窗参数；剪贴板跳转失败后的浏览器回退也保留普通方式。关闭后后续请求不再附加小窗选项，不强行改变已经打开的任务。
 
 小窗使用 [AOSP ActivityOptions.setLaunchWindowingMode](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-16.0.0_r1/core/java/android/app/ActivityOptions.java) 与 [WINDOWING_MODE_FREEFORM](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-16.0.0_r1/core/java/android/app/WindowConfiguration.java) 启动选项，通过既有系统启动器传入同一次目标请求。接口无法构造时在启动前退回普通选项；目标请求提交后不因小窗而再次启动目标。系统是否接受小窗由 ROM、显示设备和目标应用能力决定，不能由开关保证所有设备都悬浮显示。新的偏好同样需要本体解冻后等待同步确认，后续开关变化无需重启。
 
-两个开关和小窗名单均为 schema 8／codec 1 的可选字段，旧数据缺失时默认关闭、空名单，同时保留主题、规则、在线快照、备份和版本高水位。在线规则更新以最新偏好与名单为基础，不会把新选择覆盖回旧值。
+两个开关、小窗名单及布局均为 schema 8／codec 1 的可选字段，旧数据缺失时使用关闭、空名单和默认布局，同时保留主题、规则、在线快照、备份和版本高水位。在线规则更新以最新偏好、名单和布局为基础，不会把新选择覆盖回旧值。
 
 确认状态绑定当前开机、Android 用户、完整配置指纹及系统持久化结果。打开开关本身不代表系统已准备好；保存失败、旧确认和旧规则版本均不能显示“可冻结”。关闭增强或某个触发来源后，系统保留配置但停止对应功能。
 
@@ -70,9 +74,9 @@
 ```powershell
 ./tools/autonomous-fixture/build.ps1 -SdkRoot $env:ANDROID_HOME -JdkRoot $env:JAVA_HOME
 adb -s emulator-5556 root
-adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.87-debug.apk
+adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.88-debug.apk
 adb -s emulator-5556 install -r tools/autonomous-fixture/build/icebridge-autonomous-fixture.apk
-adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.87-debug.apk /data/local/tmp/icebridge-autonomous.apk
+adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.88-debug.apk /data/local/tmp/icebridge-autonomous.apk
 adb -s emulator-5556 shell 'su 1000 sh -c "CLASSPATH=/data/local/tmp/icebridge-autonomous.apk app_process /system/bin com.huanchengfly.icebridge.android16.AutonomousRuntimeHarness save"'
 adb -s emulator-5556 shell pm disable-user --user 0 io.github.yudigaga.icebridge
 adb -s emulator-5556 shell pm hide --user 0 io.github.yudigaga.icebridge

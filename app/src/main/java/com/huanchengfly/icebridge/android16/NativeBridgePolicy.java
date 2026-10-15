@@ -9,6 +9,11 @@ public final class NativeBridgePolicy {
     private NativeBridgePolicy() {
     }
 
+    /** A caller token is also present on ordinary starts; requestCode=-1 proves no result is owed. */
+    public static boolean canReplaceWebSource(Integer requestCode, boolean callerBoundPayload) {
+        return requestCode != null && requestCode == -1 && !callerBoundPayload;
+    }
+
     /**
      * Selects the candidate that is actually frozen when several applications share one host
      * rule. If the snapshot is usable but none of the candidates is frozen, retain the rule
@@ -39,6 +44,13 @@ public final class NativeBridgePolicy {
 
     public static boolean shouldBypass(boolean prewarmOnly, Set<String> frozenPackages,
                                        String target) {
+        return shouldBypass(prewarmOnly, false, frozenPackages, target);
+    }
+
+    public static boolean shouldBypass(boolean prewarmOnly, boolean matchedWebRule,
+                                       Set<String> frozenPackages, String target) {
+        // A reviewed web rule owns the handoff even when its installed target is already enabled.
+        if (matchedWebRule && target != null) return false;
         // Payment prewarming is deliberately independent: Alipay keeps its original SDK intent.
         if (prewarmOnly) {
             return false;

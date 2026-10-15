@@ -1,11 +1,39 @@
 package com.huanchengfly.icebridge.android16;
 
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
+
 import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class TransitSessionPolicyTest {
     private static final String TARGET = "com.example.target";
     private final TransitSessionPolicy policy = new TransitSessionPolicy();
+
+    @Test public void smallWindowPlacementStaysBoundAcrossStageAndSubmission() {
+        SmallWindowLayout selected = new SmallWindowLayout(60, 40, 100, 0);
+        assertTrue(policy.stage(1, 0, "com.example.source", TARGET, TransitSessionPolicy.THAWING,
+                0xff2979ff, "light", selected, 100));
+        assertSame(selected, policy.active().smallWindowLayout);
+        assertTrue(policy.stage(1, 0, "com.example.source", TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "light", SmallWindowLayout.DEFAULT, 200));
+        assertSame("A later settings change must not move an in-flight destination", selected,
+                policy.active().smallWindowLayout);
+        assertTrue(policy.submitted(1));
+        assertSame(selected, policy.active().smallWindowLayout);
+        assertTrue(policy.targetDrawn(1, 0, TARGET));
+        assertNull(policy.active());
+    }
+
+    @Test public void fullscreenSessionCannotAcquireSmallWindowPlacementFromLaterStage() {
+        begin(1, TransitSessionPolicy.THAWING, 100);
+        assertNull(policy.active().smallWindowLayout);
+        assertTrue(policy.stage(1, 0, null, TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "light", SmallWindowLayout.DEFAULT, 200));
+        assertNull(policy.active().smallWindowLayout);
+        assertTrue(policy.stage(2, 0, null, TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "light", SmallWindowLayout.DEFAULT, 300));
+        assertSame(SmallWindowLayout.DEFAULT, policy.active().smallWindowLayout);
+    }
 
     @Test public void sourceRemainsBoundToItsTransactionAcrossStagesAndSubmission() {
         assertTrue(policy.stage(1, 0, "com.example.source", TARGET, TransitSessionPolicy.THAWING,

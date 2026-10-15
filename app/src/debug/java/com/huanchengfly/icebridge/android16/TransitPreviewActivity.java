@@ -6,6 +6,8 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
+
 /** Non-exported debug visual fixture; the production presenter still requires system UID. */
 public final class TransitPreviewActivity extends Activity {
     private SystemTransitPresenter presenter;
@@ -15,6 +17,7 @@ public final class TransitPreviewActivity extends Activity {
     private Runnable backgroundClickCallback;
     private String sourcePackage = "com.android.settings";
     private String targetPackage = "com.android.calendar";
+    private SmallWindowLayout smallWindowLayout;
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -22,6 +25,13 @@ public final class TransitPreviewActivity extends Activity {
         boolean dark = getIntent().getBooleanExtra("preview_dark", false);
         sourcePackage = previewPackage("preview_source", sourcePackage);
         targetPackage = previewPackage("preview_target", targetPackage);
+        if (getIntent().getBooleanExtra("preview_small_window", false)) {
+            smallWindowLayout = new SmallWindowLayout(
+                    getIntent().getIntExtra("preview_window_width", 70),
+                    getIntent().getIntExtra("preview_window_height", 60),
+                    getIntent().getIntExtra("preview_window_horizontal", 50),
+                    getIntent().getIntExtra("preview_window_vertical", 50));
+        }
         root.setBackgroundColor(dark ? 0xff11131a : 0xffeef1f8);
         background = new View(this);
         background.setFocusableInTouchMode(true);
@@ -52,7 +62,13 @@ public final class TransitPreviewActivity extends Activity {
 
     public void show(long id, SystemTransitPresenter.Stage stage, int seed, String appearance) {
         if (presenter == null) presenter = SystemTransitPresenter.createPreview(this, message -> { });
-        presenter.onStage(id, 0, sourcePackage, targetPackage, stage, seed, appearance);
+        presenter.onStage(id, 0, sourcePackage, targetPackage, stage, seed, appearance, smallWindowLayout);
+    }
+
+    public void show(long id, SystemTransitPresenter.Stage stage, int seed, String appearance,
+                     SmallWindowLayout layout) {
+        if (presenter == null) presenter = SystemTransitPresenter.createPreview(this, message -> { });
+        presenter.onStage(id, 0, sourcePackage, targetPackage, stage, seed, appearance, layout);
     }
 
     public void submitted(long id) { presenter.onSubmitted(id); }

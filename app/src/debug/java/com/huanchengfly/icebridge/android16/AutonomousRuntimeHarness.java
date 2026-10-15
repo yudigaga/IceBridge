@@ -76,7 +76,8 @@ public final class AutonomousRuntimeHarness {
                         restored.nativeLinkCapture, restored.clipboardAutoOpen, restored.paymentSdkBridge,
                         restored.onlyFrozen, restored.browserFallback, true, restored.encodedRules(), restored.online,
                         restored.transitSeedColor, restored.transitAppearance, restored.transitCardEnabled,
-                        restored.openLinksInSmallWindow, restored.smallWindowPackages.toArray(new String[0]));
+                        restored.openLinksInSmallWindow, restored.smallWindowPackages.toArray(new String[0]),
+                        restored.smallWindowLayout);
                 SystemRuntimeConfig.State updated = new SystemOnlineRuleClient().fetch(enabled)
                         .applyTo(enabled, System.currentTimeMillis());
                 store.save(updated);

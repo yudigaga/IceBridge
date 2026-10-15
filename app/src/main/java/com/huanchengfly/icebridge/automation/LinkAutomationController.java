@@ -79,8 +79,7 @@ public final class LinkAutomationController {
             return;
         }
         boolean frozen = !engine.isAppEnabled(info);
-        // onlyFrozenLinkTargets controls whether thaw is needed; it must never suppress
-        // launching an already-enabled target. A user may tap the same URL repeatedly.
+        // A matched rule owns the handoff in both states; an enabled target needs no thaw.
         if (!frozen) {
             launch(app, uri, target, conversion, background, source, completion);
             return;
@@ -278,14 +277,10 @@ public final class LinkAutomationController {
     }
 
     private static LinkRuleEntry resolveRule(Context context, Uri uri, String sourcePackage) {
-        // A host can have multiple valid clients. Prefer the first installed candidate while
-        // retaining the rule order selected in the configuration snapshot.
-        for (LinkRuleEntry candidate : ScopedRuleResolver.matchingRules(
-                RuleConfigRepository.effectiveRuleEntries(context), sourcePackage, uri.getHost())) {
-            ApplicationInfo info = getApplicationInfo(context, candidate.targetPackage);
-            if (isInstalled(info)) return candidate;
-        }
-        return null;
+        java.util.List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(
+                RuleConfigRepository.installedRuleEntries(context), sourcePackage, uri.getHost());
+        return ScopedRuleResolver.selectRule(matches,
+                new java.util.HashSet<>(ScopedRuleResolver.targetPackages(matches)));
     }
 
     private static boolean isInstalled(ApplicationInfo info) {

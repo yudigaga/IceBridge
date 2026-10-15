@@ -1,5 +1,7 @@
 package com.huanchengfly.icebridge.android16;
 
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
+
 /** Pure state for the transient card. A submitted launch is not a displayed destination. */
 public final class TransitSessionPolicy {
     public static final int THAWING = 0;
@@ -17,6 +19,12 @@ public final class TransitSessionPolicy {
     public synchronized boolean stage(long id, int userId, String sourcePackage,
                                       String targetPackage, int stage, int seed,
                                       String appearance, long now) {
+        return stage(id, userId, sourcePackage, targetPackage, stage, seed, appearance, null, now);
+    }
+
+    public synchronized boolean stage(long id, int userId, String sourcePackage,
+                                      String targetPackage, int stage, int seed,
+                                      String appearance, SmallWindowLayout smallWindowLayout, long now) {
         if (id < 1 || userId < 0 || targetPackage == null || targetPackage.isEmpty()
                 || targetPackage.length() > 255 || (stage != THAWING && stage != OPENING)
                 || id < highestId || (id == highestId && active == null)) return false;
@@ -24,11 +32,11 @@ public final class TransitSessionPolicy {
             if (active.userId != userId || !active.targetPackage.equals(targetPackage)
                     || stage < active.stage) return false;
             active = new Session(id, userId, active.sourcePackage, targetPackage, stage, seed, appearance,
-                    active.startedAt, active.deadline, active.submitted);
+                    active.smallWindowLayout, active.startedAt, active.deadline, active.submitted);
         } else {
             highestId = id;
-            active = new Session(id, userId, normalizeSource(sourcePackage), targetPackage, stage, seed, appearance, now,
-                    now + TIMEOUT_MILLIS, false);
+            active = new Session(id, userId, normalizeSource(sourcePackage), targetPackage, stage, seed, appearance,
+                    smallWindowLayout, now, now + TIMEOUT_MILLIS, false);
         }
         return true;
     }
@@ -36,7 +44,7 @@ public final class TransitSessionPolicy {
     public synchronized boolean submitted(long id) {
         if (active == null || active.id != id || active.stage != OPENING) return false;
         active = new Session(active.id, active.userId, active.sourcePackage, active.targetPackage, active.stage,
-                active.seed, active.appearance, active.startedAt, active.deadline, true);
+                active.seed, active.appearance, active.smallWindowLayout, active.startedAt, active.deadline, true);
         return true;
     }
 
@@ -82,12 +90,14 @@ public final class TransitSessionPolicy {
         public final int stage;
         public final int seed;
         public final String appearance;
+        public final SmallWindowLayout smallWindowLayout;
         public final long startedAt;
         public final long deadline;
         public final boolean submitted;
 
         private Session(long id, int userId, String sourcePackage, String targetPackage, int stage, int seed,
-                        String appearance, long startedAt, long deadline, boolean submitted) {
+                        String appearance, SmallWindowLayout smallWindowLayout,
+                        long startedAt, long deadline, boolean submitted) {
             this.id = id;
             this.userId = userId;
             this.sourcePackage = sourcePackage;
@@ -96,6 +106,7 @@ public final class TransitSessionPolicy {
             this.seed = seed | 0xff000000;
             this.appearance = "dark".equals(appearance) ? "dark"
                     : "light".equals(appearance) ? "light" : "system";
+            this.smallWindowLayout = smallWindowLayout;
             this.startedAt = startedAt;
             this.deadline = deadline;
             this.submitted = submitted;

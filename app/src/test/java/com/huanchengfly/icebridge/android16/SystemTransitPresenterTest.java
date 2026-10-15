@@ -1,5 +1,7 @@
 package com.huanchengfly.icebridge.android16;
 
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
+
 import org.junit.Test;
 import java.util.ArrayList;
 import java.util.List;
@@ -7,6 +9,26 @@ import static org.junit.Assert.*;
 
 public class SystemTransitPresenterTest {
     private static final String TARGET = "com.example.target";
+
+    @Test public void intendedSmallWindowBoundsTravelWithCardUntilTargetAppears() {
+        Fixture fixture = new Fixture();
+        SmallWindowLayout placement = new SmallWindowLayout(55, 40, 100, 0);
+        fixture.presenter.onStage(1, 0, "com.example.source", TARGET,
+                SystemTransitPresenter.Stage.THAWING, 0xff7e57c2, "light", placement);
+        fixture.ui.runReady();
+        assertSame(placement, fixture.host.session.smallWindowLayout);
+        fixture.stage(1, SystemTransitPresenter.Stage.OPENING);
+        fixture.presenter.onSubmitted(1);
+        fixture.ui.runReady();
+        assertSame("Legacy stage callbacks must preserve the transaction's placement", placement,
+                fixture.host.session.smallWindowLayout);
+        fixture.presenter.onTargetDrawn(1, 0, TARGET);
+        fixture.ui.runReady();
+        assertNull(fixture.host.session);
+        fixture.stage(2, SystemTransitPresenter.Stage.OPENING);
+        fixture.ui.runReady();
+        assertNull("The next fullscreen target must use ordinary card size", fixture.host.session.smallWindowLayout);
+    }
 
     @Test public void cardIsOptInAndDisabledStagesCreateNoUiWork() {
         Fixture fixture = new Fixture(false);

@@ -36,6 +36,7 @@ final class TransitFlowView extends View {
     private float sourceCenter;
     private float targetCenter;
     private float phase = 0.2f;
+    private float compactScale = 1f;
     private int frameCount;
 
     TransitFlowView(Context context) {
@@ -75,14 +76,30 @@ final class TransitFlowView extends View {
     }
 
     @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        setMeasuredDimension(resolveSize(Math.round(dp(184)), widthMeasureSpec),
-                resolveSize(Math.round(dp(80)), heightMeasureSpec));
+        setMeasuredDimension(resolveSize(Math.round(dp(184) * compactScale), widthMeasureSpec),
+                resolveSize(Math.round(dp(80) * compactScale), heightMeasureSpec));
+    }
+
+    void setCompactScale(float value) {
+        float bounded = Math.max(0.001f, Math.min(1f, value));
+        if (compactScale == bounded) return;
+        compactScale = bounded;
+        track.setStrokeWidth(dp(1) * compactScale);
+        glow.setStrokeWidth(dp(8) * compactScale);
+        requestLayout();
+        updateGeometry(getWidth(), getHeight());
+        invalidate();
     }
 
     @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
         super.onSizeChanged(width, height, oldWidth, oldHeight);
-        float radius = Math.min(dp(24), Math.max(dp(14), width / 6f));
-        sourceCenter = Math.max(radius + dp(2), width * 0.16f);
+        updateGeometry(width, height);
+    }
+
+    private void updateGeometry(int width, int height) {
+        float radius = Math.max(0, Math.min(dp(24) * compactScale,
+                Math.min(width / 6f, (height - dp(8) * compactScale) / 2f)));
+        sourceCenter = Math.max(radius + dp(2) * compactScale, width * 0.16f);
         targetCenter = width - sourceCenter;
         float y = height * 0.5f;
         float k = 0.55228475f;
@@ -97,8 +114,8 @@ final class TransitFlowView extends View {
                 sourceCenter - k * radius, y - radius, sourceCenter, y - radius);
         route.cubicTo(sourceCenter + k * radius, y - radius,
                 sourceCenter + radius, y - k * radius, sourceCenter + radius, y);
-        route.cubicTo(sourceCenter + radius, y + dp(17),
-                targetCenter - radius, y - dp(17), targetCenter - radius, y);
+        route.cubicTo(sourceCenter + radius, y + dp(17) * compactScale,
+                targetCenter - radius, y - dp(17) * compactScale, targetCenter - radius, y);
         // The same contour continues around the destination, without jumping across the card.
         route.cubicTo(targetCenter - radius, y + k * radius,
                 targetCenter - k * radius, y + radius, targetCenter, y + radius);
@@ -110,15 +127,15 @@ final class TransitFlowView extends View {
                 targetCenter - radius, y - k * radius, targetCenter - radius, y);
         measure.setPath(route, false);
         routeLength = measure.getLength();
-        float iconRadius = Math.max(dp(10), radius - dp(6));
+        float iconRadius = Math.max(0, radius - dp(6) * compactScale);
         sourceBounds.set(sourceCenter - iconRadius, y - iconRadius,
                 sourceCenter + iconRadius, y + iconRadius);
         targetBounds.set(targetCenter - iconRadius, y - iconRadius,
                 targetCenter + iconRadius, y + iconRadius);
         sourceClip.rewind();
         targetClip.rewind();
-        sourceClip.addRoundRect(sourceBounds, dp(10), dp(10), Path.Direction.CW);
-        targetClip.addRoundRect(targetBounds, dp(10), dp(10), Path.Direction.CW);
+        sourceClip.addRoundRect(sourceBounds, dp(10) * compactScale, dp(10) * compactScale, Path.Direction.CW);
+        targetClip.addRoundRect(targetBounds, dp(10) * compactScale, dp(10) * compactScale, Path.Direction.CW);
     }
 
     @Override protected void onDraw(Canvas canvas) {
@@ -147,11 +164,11 @@ final class TransitFlowView extends View {
             fragment.rewind();
             measure.getSegment(Math.max(0, from), Math.min(routeLength, to), fragment, true);
             stream.setAlpha((int) (245 * strength * strength));
-            stream.setStrokeWidth(dp(0.8f + 2 * strength));
+            stream.setStrokeWidth(dp(0.8f + 2 * strength) * compactScale);
             canvas.drawPath(fragment, stream);
         }
         if (end > 0 && end < routeLength && measure.getPosTan(end, point, tangent)) {
-            canvas.drawCircle(point[0], point[1], dp(2.4f), head);
+            canvas.drawCircle(point[0], point[1], dp(2.4f) * compactScale, head);
         }
     }
 
@@ -210,4 +227,6 @@ final class TransitFlowView extends View {
     boolean hasTargetIcon() { return targetIcon != null; }
     int renderedFrames() { return frameCount; }
     boolean animationRunning() { return animator.isStarted(); }
+    RectF sourceIconBounds() { return new RectF(sourceBounds); }
+    RectF targetIconBounds() { return new RectF(targetBounds); }
 }

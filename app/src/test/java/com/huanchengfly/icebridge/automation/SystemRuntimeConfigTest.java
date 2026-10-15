@@ -193,6 +193,7 @@ public class SystemRuntimeConfigTest {
         legacy.remove("transitCardEnabled");
         legacy.remove("openLinksInSmallWindow");
         legacy.remove("smallWindowPackages");
+        legacy.remove("smallWindowLayout");
         assertFalse(legacy.has("transitSeedColor"));
         assertFalse(legacy.has("transitAppearance"));
         SystemRuntimeConfig.State restored = decode(legacy.toString());
@@ -201,6 +202,7 @@ public class SystemRuntimeConfigTest {
         assertFalse(restored.transitCardEnabled);
         assertFalse(restored.openLinksInSmallWindow);
         assertTrue(restored.smallWindowPackages.isEmpty());
+        assertEquals(SmallWindowLayout.DEFAULT, restored.smallWindowLayout);
         assertArrayEquals(original.encodedRules(), restored.encodedRules());
         assertEquals(5, restored.online.highestRevision);
         assertEquals(hash(latest), restored.online.highestSha256);
@@ -403,6 +405,64 @@ public class SystemRuntimeConfigTest {
         for (String packageName : oversized) tooMany.add(packageName);
         encoded.add("smallWindowPackages", tooMany);
         rejectsJson(encoded.toString(), "runtime-small-window-packages");
+    }
+
+    @Test public void missingWindowGeometryRetainsExistingSelectionRulesAndOnlineBackups() throws Exception {
+        String old = bundle(4, BUNDLE_RULE), latest = bundle(5, "");
+        SystemRuntimeConfig.OnlineState online = new SystemRuntimeConfig.OnlineState(latest,
+                hash(latest), old, hash(old), 5, hash(latest), true);
+        SystemRuntimeConfig.State original = selected(new String[]{"com.example.reader"}, online);
+        JsonObject legacy = JsonParser.parseString(new String(SystemRuntimeConfig.encode(original),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+        legacy.remove("smallWindowLayout");
+        SystemRuntimeConfig.State restored = decode(legacy.toString());
+        assertEquals(SmallWindowLayout.DEFAULT, restored.smallWindowLayout);
+        assertEquals(original.smallWindowPackages, restored.smallWindowPackages);
+        assertTrue(restored.openLinksInSmallWindow);
+        assertTrue(restored.transitCardEnabled);
+        assertArrayEquals(original.encodedRules(), restored.encodedRules());
+        assertEquals(latest, restored.online.activeRaw);
+        assertEquals(old, restored.online.backupRaw);
+        assertEquals(5, restored.online.highestRevision);
+        assertEquals(hash(latest), restored.online.highestSha256);
+    }
+
+    @Test public void eachWindowAdjustmentSurvivesPersistenceAndGetsItsOwnAcknowledgement() throws Exception {
+        java.util.Set<String> fingerprints = new java.util.HashSet<>();
+        for (String encoded : new String[]{"70,60,50,50", "71,60,50,50", "70,61,50,50", "70,60,51,50", "70,60,50,51"}) {
+            SmallWindowLayout layout = SmallWindowLayout.parse(encoded);
+            SystemRuntimeConfig.State selected = selected(new String[]{"com.example.reader"}, null);
+            SystemRuntimeConfig.State original = withLayout(selected, layout);
+            SystemRuntimeConfig.State restored = decode(new String(SystemRuntimeConfig.encode(original), StandardCharsets.UTF_8));
+            assertEquals(layout, restored.smallWindowLayout);
+            assertEquals(original.smallWindowPackages, restored.smallWindowPackages);
+            assertArrayEquals(original.encodedRules(), restored.encodedRules());
+            SystemRuntimeConfig.State updated = restored.withOnline(restored.online, restored.encodedRules(), 99999);
+            assertEquals(layout, updated.smallWindowLayout);
+            assertEquals(SystemRuntimeConfig.fingerprint(original), SystemRuntimeConfig.fingerprint(updated));
+            fingerprints.add(SystemRuntimeConfig.fingerprint(original));
+        }
+        assertEquals(5, fingerprints.size());
+    }
+
+    @Test public void explicitWindowGeometryMustBeExactlyFourBoundedIntegers() throws Exception {
+        for (String invalid : new String[]{"null", "true", "{}", "\"70,60,50,50\"", "[]", "[70,60,50]",
+                "[70,60,50,50,0]", "[\"70\",60,50,50]", "[70,true,50,50]", "[70,60,null,50]",
+                "[70,60,50,{}]", "[70.5,60,50,50]", "[2147483648,60,50,50]", "[29,60,50,50]",
+                "[96,60,50,50]", "[70,24,50,50]", "[70,96,50,50]", "[70,60,-1,50]", "[70,60,50,101]"}) {
+            rejectsJson(json().replace("\"smallWindowLayout\":[70,60,50,50]", "\"smallWindowLayout\":" + invalid),
+                    "runtime-small-window-layout");
+        }
+        rejects(() -> withLayout(selected(null, null), null), "runtime-small-window-layout");
+    }
+
+    private static SystemRuntimeConfig.State withLayout(SystemRuntimeConfig.State state, SmallWindowLayout layout) throws IOException {
+        return new SystemRuntimeConfig.State(state.providerSchemaVersion, state.userId, state.savedAtEpochMillis,
+                state.autonomousEnabled, state.recoveryEnabled, state.autoOpenLinks, state.nativeLinkCapture,
+                state.clipboardAutoOpen, state.paymentSdkBridge, state.onlyFrozen, state.browserFallback,
+                state.onlineUpdatesEnabled, state.encodedRules(), state.online, state.transitSeedColor,
+                state.transitAppearance, state.transitCardEnabled, state.openLinksInSmallWindow,
+                state.smallWindowPackages.toArray(new String[0]), layout);
     }
 
     private static SystemRuntimeConfig.State selected(String[] packages, SystemRuntimeConfig.OnlineState online) throws IOException {

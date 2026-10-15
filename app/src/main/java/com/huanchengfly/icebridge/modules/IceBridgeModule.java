@@ -322,7 +322,9 @@ public final class IceBridgeModule extends XposedModule {
                     // ActivityStarter observes the same request and queues work after its finally
                     // block, outside the framework launch locks.
                     if (autonomousConfiguration(userId) != null) return chain.proceed();
-                    Intent nativeBridge = buildNativeAutoOpenBridge(original, userId, "interceptor");
+                    // This interceptor has no result relationship metadata. A WebView handoff
+                    // must wait for ActivityStarter's exact requestCode instead of guessing.
+                    Intent nativeBridge = buildNativeAutoOpenBridge(original, userId, "interceptor", null);
                     if (nativeBridge != null) {
                         log(4, TAG, "native link redirected: target="
                                 + nativeBridge.getStringExtra(EXTRA_TARGET_PACKAGE));
@@ -341,8 +343,8 @@ public final class IceBridgeModule extends XposedModule {
     /**
      * HyperOS routes a number of WebView and explicit SDK launches directly through
      * ActivityStarter.execute(), bypassing ActivityStartInterceptor. This is the reliable
-     * system-wide fallback: it swaps only a recognized, frozen target to the foreground bridge
-     * before package resolution can fail.
+     * system-wide fallback: reviewed rules own their handoff regardless of target freeze state,
+     * before the source browser can start in parallel.
      */
     private void installActivityStarterExecuteHook(ClassLoader classLoader) {
         AtmsSignatureResolver.ResolvedMethod resolved =
@@ -391,10 +393,9 @@ public final class IceBridgeModule extends XposedModule {
                                 if (autonomousConfiguration(userId) != null) {
                                     autonomousObservedAt = SystemClock.elapsedRealtime();
                                     autonomous = captureAutonomousRequest(original, userId, request);
-                                    if (autonomous != null && NativeActivityLinkCapture.isSupportedActivity(original)
-                                            && autonomous.kind == AutonomousBridgeCoordinator.Kind.WEB_RULE
-                                            && autonomous.explicitTarget == null) {
-                                        // A known source WebView is either owned before it starts or
+                                    if (autonomous != null
+                                            && SystemAutonomousCapture.matchesOwnedWebSource(original, autonomous)) {
+                                        // A reviewed public link is either owned before it starts or
                                         // left entirely to Android. Never launch both paths afterward.
                                         takeover = prepareTakeover(chain.getThisObject(), request,
                                                 original, autonomous);
@@ -402,8 +403,13 @@ public final class IceBridgeModule extends XposedModule {
                                     }
                                 } else {
                                     // The normal mode keeps its existing foreground app trampoline.
-                                    Intent bridge = buildNativeAutoOpenBridge(original, userId, "activity_starter");
-                                    if (bridge == null) bridge = consumeNativeBridgeReplacement(original, userId);
+                                    Integer requestCode = nativeWebRequestCode(request);
+                                    Intent bridge = buildNativeAutoOpenBridge(original, userId,
+                                            "activity_starter", requestCode);
+                                    if (bridge == null && (!NativeActivityLinkCapture.isSupportedActivity(original)
+                                            || canReplaceNativeWebSource(original, requestCode))) {
+                                        bridge = consumeNativeBridgeReplacement(original, userId);
+                                    }
                                     if (bridge != null) {
                                         activityStarterIntentField.set(request, new Intent(bridge));
                                         log(4, TAG, "native link redirected via ActivityStarter: target="
@@ -577,17 +583,17 @@ public final class IceBridgeModule extends XposedModule {
                 | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION;
         if ((intent.getFlags() & (grants | Intent.FLAG_ACTIVITY_FORWARD_RESULT)) != 0
                 || intent.getClipData() != null || intent.getSelector() != null) return "caller-bound-payload";
-        NativeActivityLinkCapture.CapturedLink link = NativeActivityLinkCapture.capture(intent);
-        if (link == null || !captured.sourcePackage.equals(link.sourcePackage)
-                || captured.payload == null || !link.url.equals(captured.payload.getDataString())) {
+        if (!SystemAutonomousCapture.matchesOwnedWebSource(intent, captured)) {
             return "source-link-changed";
         }
+        NativeActivityLinkCapture.CapturedLink link = NativeActivityLinkCapture.capture(intent);
         if (resolved) {
             Object value = state.activityInfo.get(request);
             if (!(value instanceof ActivityInfo)) return "source-activity-unresolved";
             ActivityInfo info = (ActivityInfo) value;
-            if (!link.sourcePackage.equals(info.packageName) || !link.sourceActivity.equals(info.name)
-                    || info.applicationInfo == null || info.applicationInfo.uid != callerUid) {
+            if (link != null && (!link.sourcePackage.equals(info.packageName)
+                    || !link.sourceActivity.equals(info.name)
+                    || info.applicationInfo == null || info.applicationInfo.uid != callerUid)) {
                 return "resolved-source-identity-mismatch";
             }
         }
@@ -892,7 +898,22 @@ public final class IceBridgeModule extends XposedModule {
         autonomousRuntime = runtime;
     }
 
-    private Intent buildNativeAutoOpenBridge(Intent original, int userId, String hookName) {
+    private Integer nativeWebRequestCode(Object frameworkRequest) {
+        if (frameworkRequest == null) return null;
+        Field code = findField(frameworkRequest.getClass(), "requestCode");
+        if (code == null) return null;
+        try {
+            Object value = code.get(frameworkRequest);
+            return value instanceof Integer ? (Integer) value : null;
+        } catch (IllegalAccessException ignored) { return null; }
+    }
+
+    private static boolean canReplaceNativeWebSource(Intent original, Integer requestCode) {
+        return NativeBridgePolicy.canReplaceWebSource(requestCode,
+                SystemAutonomousCapture.hasCallerBoundPayload(original));
+    }
+
+    private Intent buildNativeAutoOpenBridge(Intent original, int userId, String hookName, Integer requestCode) {
         if (original == null) {
             return null;
         }
@@ -919,6 +940,10 @@ public final class IceBridgeModule extends XposedModule {
         // not silently disable a host app's signed payment SDK flow.
         NativeActivityLinkCapture.CapturedLink captured = configuration.nativeLinkCapture
                 ? NativeActivityLinkCapture.capture(original) : null;
+        if (captured != null && !canReplaceNativeWebSource(original, requestCode)) {
+            log(4, TAG, "native bridge preserved caller-bound WebView or unknown/result request");
+            return null;
+        }
         String target = null;
         String rawUrl;
         boolean directIntent = false;
@@ -933,7 +958,8 @@ public final class IceBridgeModule extends XposedModule {
                 List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(configuration.scopedRules,
                         captured.sourcePackage, uri.getHost());
                 List<String> candidates = ScopedRuleResolver.targetPackages(matches);
-                LinkRuleEntry selected = ScopedRuleResolver.selectFrozenRule(matches, configuration.frozenPackages);
+                LinkRuleEntry selected = ScopedRuleResolver.selectRule(matches,
+                        new LinkedHashSet<>(ScopedRuleResolver.targetPackages(matches)));
                 target = selected == null ? null : selected.targetPackage;
                 conversion = selected == null ? LinkRuleEntry.CONVERSION_NONE : selected.urlConversion;
                 log(4, TAG, "native target candidates: host=" + uri.getHost()
@@ -1009,11 +1035,10 @@ public final class IceBridgeModule extends XposedModule {
                     + ", component=" + componentOf(original) + ", package=" + packageOf(original));
             return null;
         }
-        // A non-empty frozen-package snapshot lets us distinguish a target that still needs
-        // thawing from one that is already enabled (or whose snapshot is stale). Preserve the
-        // original Intent for the latter; only frozen targets need BridgeActivity. The UUID replay
-        // token above remains the loop guard for the bridge path and is one-shot/short-lived.
-        if (NativeBridgePolicy.shouldBypass(prewarmOnly, configuration.frozenPackages, target)) {
+        // Matched web rules own enabled targets too. Direct schemes retain their original-call
+        // safety policy, and the one-use replay token above prevents bridge recursion.
+        if (NativeBridgePolicy.shouldBypass(prewarmOnly, captured != null,
+                configuration.frozenPackages, target)) {
             log(4, TAG, "native bridge skipped: target already enabled or snapshot stale: target="
                     + target + ", source=" + bridgeSource);
             // Preserve the original intent for targets that are not frozen according to the
@@ -2303,7 +2328,7 @@ public final class IceBridgeModule extends XposedModule {
         }
         List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(configuration.scopedRules, "*", host);
         List<String> candidates = ScopedRuleResolver.targetPackages(matches);
-        LinkRuleEntry selected = ScopedRuleResolver.selectFrozenRule(matches, configuration.frozenPackages);
+        LinkRuleEntry selected = ScopedRuleResolver.selectRule(matches, new LinkedHashSet<>(candidates));
         String target = selected == null ? null : selected.targetPackage;
         if (target == null) {
             log(4, TAG, "clipboard skipped: no_rule host=" + host);

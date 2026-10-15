@@ -4,6 +4,7 @@ import android.app.Instrumentation;
 import android.app.UiAutomation;
 import android.content.Intent;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.drawable.GradientDrawable;
 import android.os.SystemClock;
 import android.os.Build;
@@ -17,6 +18,8 @@ import android.widget.TextView;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.huanchengfly.icebridge.automation.SmallWindowLayout;
+
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -28,6 +31,64 @@ import static org.junit.Assert.*;
 /** Uses an application token to verify the same native card without asking for overlay permission. */
 @RunWith(AndroidJUnit4.class)
 public class SystemTransitRenderingTest {
+    @Test public void smallWindowCardIsSmallerAndCenteredInOffCenterTargetBounds() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        SmallWindowLayout layout = new SmallWindowLayout(60, 50, 100, 0);
+        TransitPreviewActivity activity = openSmallWindow(instrumentation, false, layout);
+        try {
+            assertCompactCard(instrumentation, activity, "正在解冻");
+            awaitFocusedAndLaidOut(instrumentation, activity);
+            instrumentation.runOnMainSync(() -> {
+                assertCardPlacement(activity, layout);
+                float density = activity.getResources().getDisplayMetrics().density;
+                assertEquals(156, activity.card().getWidth() / density, 1);
+                assertEquals(72, activity.card().getHeight() / density, 1);
+                TransitFlowView flow = findFlow(activity.card());
+                assertEquals("Small-window icons should be scaled together with the moving line",
+                        27, flow.sourceIconBounds().width() / density, 1);
+                assertFlowGeometryInsideView(flow);
+                activity.show(1, SystemTransitPresenter.Stage.OPENING, 0xff7e57c2, "dark", null);
+                activity.submitted(1);
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> {
+                assertCardPlacement(activity, layout);
+                assertEquals(156, activity.card().getWidth()
+                        / activity.getResources().getDisplayMetrics().density, 1);
+                assertEquals(TransitSessionPolicy.Palette.fromSeed(0xff7e57c2, true).card,
+                        ((GradientDrawable) activity.card().getBackground()).getColor().getDefaultColor());
+                activity.targetDrawn(1);
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> assertNull(activity.card()));
+        } finally { instrumentation.runOnMainSync(activity::finish); }
+    }
+
+    @Test public void minimumSmallWindowKeepsScaledCardAndIconsInsideTarget() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        SmallWindowLayout layout = new SmallWindowLayout(30, 25, 0, 100);
+        TransitPreviewActivity activity = openSmallWindow(instrumentation, true, layout);
+        AtomicReference<TransitFlowView> rendered = new AtomicReference<>();
+        try {
+            assertCompactCard(instrumentation, activity, "正在解冻");
+            awaitFocusedAndLaidOut(instrumentation, activity);
+            instrumentation.runOnMainSync(() -> {
+                assertCardPlacement(activity, layout);
+                Rect target = SystemWindowLayout.resolve(activity, layout);
+                View card = activity.card();
+                assertTrue(card.getWidth() <= target.width());
+                assertTrue(card.getHeight() <= target.height());
+                TransitFlowView flow = findFlow(card);
+                assertFlowGeometryInsideView(flow);
+                rendered.set(flow);
+                assertFalse(containsVisibleText(card));
+                assertTrue(activity.hasWindowFocus());
+                assertSame(activity.backgroundView(), activity.getCurrentFocus());
+            });
+            awaitFlowFrames(instrumentation, rendered.get());
+        } finally { instrumentation.runOnMainSync(activity::finish); }
+    }
+
     @Test public void compactCardContainsOnlyTheAppFlowAndNoVisibleText() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         TransitPreviewActivity activity = open(instrumentation, false);
@@ -266,6 +327,46 @@ public class SystemTransitRenderingTest {
 
     private TransitPreviewActivity open(Instrumentation instrumentation, boolean dark) {
         return open(instrumentation, dark, null, null);
+    }
+
+    private TransitPreviewActivity openSmallWindow(Instrumentation instrumentation, boolean dark,
+                                                    SmallWindowLayout layout) {
+        Intent intent = new Intent(instrumentation.getTargetContext(), TransitPreviewActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("preview_dark", dark)
+                .putExtra("preview_small_window", true)
+                .putExtra("preview_window_width", layout.widthPercent)
+                .putExtra("preview_window_height", layout.heightPercent)
+                .putExtra("preview_window_horizontal", layout.horizontalPercent)
+                .putExtra("preview_window_vertical", layout.verticalPercent);
+        TransitPreviewActivity activity = (TransitPreviewActivity) instrumentation.startActivitySync(intent);
+        instrumentation.waitForIdleSync();
+        return activity;
+    }
+
+    private void assertCardPlacement(TransitPreviewActivity activity, SmallWindowLayout layout) {
+        Rect target = SystemWindowLayout.resolve(activity, layout);
+        View card = activity.card();
+        int[] location = new int[2];
+        card.getLocationOnScreen(location);
+        Rect actual = new Rect(location[0], location[1], location[0] + card.getWidth(),
+                location[1] + card.getHeight());
+        assertTrue("The progress card must fit within the intended target: " + actual + " in " + target,
+                target.contains(actual));
+        assertEquals("Horizontal placement must use the target center, rather than screen center",
+                target.centerX(), actual.centerX(), 1);
+        assertEquals("Preview panels must use the same screen frame as the actual system card",
+                target.centerY(), actual.centerY(), 1);
+    }
+
+    private void assertFlowGeometryInsideView(TransitFlowView flow) {
+        for (RectF bounds : new RectF[]{flow.sourceIconBounds(), flow.targetIconBounds()}) {
+            assertTrue(bounds.width() > 0);
+            assertTrue(bounds.height() > 0);
+            assertTrue(bounds.left >= 0);
+            assertTrue(bounds.top >= 0);
+            assertTrue(bounds.right <= flow.getWidth());
+            assertTrue(bounds.bottom <= flow.getHeight());
+        }
     }
 
     private TransitPreviewActivity open(Instrumentation instrumentation, boolean dark,
