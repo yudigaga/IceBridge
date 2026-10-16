@@ -55,6 +55,14 @@
         <activity android:name=".activities.RuleConfigActivity" />
         <activity android:name=".activities.ThemeSettingsActivity" android:exported="false" />
         <activity android:name=".activities.SmallWindowSettingsActivity" android:exported="false" />
+        <activity
+            android:name=".activities.SmallWindowFrameEditorActivity"
+            android:launchMode="singleTask"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:resizeableActivity="false"
+            android:taskAffinity="${applicationId}.layout_editor"
+            android:theme="@style/SmallWindowFrameEditorTheme" />
 
         <activity
             android:name=".activities.MainActivity"

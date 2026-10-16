@@ -32,11 +32,12 @@ public final class TransitSessionPolicy {
             if (active.userId != userId || !active.targetPackage.equals(targetPackage)
                     || stage < active.stage) return false;
             active = new Session(id, userId, active.sourcePackage, targetPackage, stage, seed, appearance,
-                    active.smallWindowLayout, active.startedAt, active.deadline, active.submitted);
+                    active.smallWindowLayout, active.taskBounds, active.confirmedByTransitToken,
+                    active.startedAt, active.deadline, active.submitted);
         } else {
             highestId = id;
             active = new Session(id, userId, normalizeSource(sourcePackage), targetPackage, stage, seed, appearance,
-                    smallWindowLayout, now, now + TIMEOUT_MILLIS, false);
+                    smallWindowLayout, null, false, now, now + TIMEOUT_MILLIS, false);
         }
         return true;
     }
@@ -44,7 +45,31 @@ public final class TransitSessionPolicy {
     public synchronized boolean submitted(long id) {
         if (active == null || active.id != id || active.stage != OPENING) return false;
         active = new Session(active.id, active.userId, active.sourcePackage, active.targetPackage, active.stage,
-                active.seed, active.appearance, active.smallWindowLayout, active.startedAt, active.deadline, true);
+                active.seed, active.appearance, active.smallWindowLayout, active.taskBounds,
+                active.confirmedByTransitToken, active.startedAt, active.deadline, true);
+        return true;
+    }
+
+    /** Only the current transaction's exact task can move an already visible card. */
+    public synchronized boolean targetBounds(long id, TransitTaskBounds bounds) {
+        if (active == null || active.id != id || active.smallWindowLayout == null || bounds == null
+                || !bounds.isFreeform() || active.userId != bounds.userId
+                || !active.targetPackage.equals(bounds.packageName)
+                || (bounds.transitId > 0 && bounds.transitId != id)
+                || bounds.observedAt < active.startedAt) return false;
+        TransitTaskBounds previous = active.taskBounds;
+        // The worker's unique-visible-task query has no launch token. Configuration callbacks
+        // without a token can only update that already identified task, never choose one by package.
+        if (previous == null && bounds.transitId == 0
+                && (bounds.taskInstance != 0 || active.stage != OPENING)) return false;
+        if (previous != null && (bounds.observedAt < previous.observedAt
+                || ((active.confirmedByTransitToken || bounds.transitId == 0)
+                && (previous.taskId != bounds.taskId || (previous.taskInstance > 0
+                && previous.taskInstance != bounds.taskInstance))))) return false;
+        active = new Session(active.id, active.userId, active.sourcePackage, active.targetPackage, active.stage,
+                active.seed, active.appearance, active.smallWindowLayout, bounds,
+                active.confirmedByTransitToken || bounds.transitId == id,
+                active.startedAt, active.deadline, active.submitted);
         return true;
     }
 
@@ -91,13 +116,15 @@ public final class TransitSessionPolicy {
         public final int seed;
         public final String appearance;
         public final SmallWindowLayout smallWindowLayout;
+        public final TransitTaskBounds taskBounds;
+        public final boolean confirmedByTransitToken;
         public final long startedAt;
         public final long deadline;
         public final boolean submitted;
 
         private Session(long id, int userId, String sourcePackage, String targetPackage, int stage, int seed,
-                        String appearance, SmallWindowLayout smallWindowLayout,
-                        long startedAt, long deadline, boolean submitted) {
+                        String appearance, SmallWindowLayout smallWindowLayout, TransitTaskBounds taskBounds,
+                        boolean confirmedByTransitToken, long startedAt, long deadline, boolean submitted) {
             this.id = id;
             this.userId = userId;
             this.sourcePackage = sourcePackage;
@@ -107,6 +134,8 @@ public final class TransitSessionPolicy {
             this.appearance = "dark".equals(appearance) ? "dark"
                     : "light".equals(appearance) ? "light" : "system";
             this.smallWindowLayout = smallWindowLayout;
+            this.taskBounds = taskBounds;
+            this.confirmedByTransitToken = confirmedByTransitToken;
             this.startedAt = startedAt;
             this.deadline = deadline;
             this.submitted = submitted;

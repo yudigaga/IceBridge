@@ -128,6 +128,12 @@ public final class SystemAutonomousRuntime {
                 transitTraces.values(), 0, SystemClock.elapsedRealtime()) != null;
     }
 
+    public boolean observesTaskBounds() {
+        SystemRuntimeConfig.State state = current(0);
+        return state != null && state.transitCardEnabled && state.openLinksInSmallWindow
+                && observesTargetWindows();
+    }
+
     /** Called exclusively at the verified public Binder entry before framework launch locks. */
     public void prepareOriginalLaunch(Intent original, int userId, int callerUserId, boolean outsideLock) {
         SystemRuntimeConfig.State state = current(userId);
@@ -416,6 +422,70 @@ public final class SystemAutonomousRuntime {
         transitEvents.post(() -> handleTargetWindow(event));
     }
 
+    /** Hook-side work is an immutable snapshot and one non-blocking dispatch only. */
+    public void onTaskBounds(TransitTaskBounds event) {
+        if (event == null) return;
+        transitEvents.post(() -> {
+            TransitTrace trace = null;
+            if (event.transitId > 0) {
+                trace = (TransitTrace) TransitWindowCorrelation.match(transitTraces.values(),
+                        event.transitId, event.userId, event.packageName, event.observedAt);
+            } else {
+                // Untagged routers cannot choose a task by package. The initial public task query
+                // must already have identified one unique visible task for this transaction.
+                for (TransitTrace candidate : transitTraces.values()) {
+                    TransitTaskBounds anchor = candidate.taskAnchor;
+                    if (anchor != null && anchor.taskId == event.taskId
+                            && candidate.userId == event.userId && !candidate.done.get()
+                            && candidate.targetPackage != null
+                            && candidate.targetPackage.equals(event.packageName)
+                            && event.observedAt >= candidate.openingAt && candidate.openingAt > 0) {
+                        if (trace != null) return;
+                        trace = candidate;
+                    }
+                }
+            }
+            if (trace == null) return;
+            TransitTaskBounds previous = trace.taskAnchor;
+            if (!event.isFreeform()) {
+                if (trace.confirmedByTransitToken && previous != null && previous.taskId == event.taskId
+                        && previous.taskInstance > 0 && previous.taskInstance == event.taskInstance
+                        && event.observedAt >= previous.observedAt) {
+                    transit.finish(trace.id, "target-left-small-window");
+                }
+                return;
+            }
+            if (!trace.bindTaskBounds(event)) return;
+            transit.updateTargetBounds(trace.id, event);
+        });
+    }
+
+    @SuppressWarnings("deprecation")
+    private void anchorExistingSmallWindow(TransitTrace trace, String target) {
+        if (trace.taskLookupAttempted) return;
+        trace.taskLookupAttempted = true;
+        // This method runs on the module worker, before entering a framework launch. It never
+        // queries Binder or packages from the Task configuration hook / global WM lock.
+        long identity = Binder.clearCallingIdentity();
+        try {
+            ActivityManager manager = context.getSystemService(ActivityManager.class);
+            if (manager == null) return;
+            TransitTaskBounds unique = null;
+            int count = 0;
+            for (ActivityManager.RunningTaskInfo task : manager.getRunningTasks(64)) {
+                if (++count > 64) break;
+                TransitTaskBounds candidate = SystemTaskBoundsObserver.runningTask(task);
+                if (candidate == null || !candidate.isFreeform() || candidate.userId != trace.userId
+                        || !target.equals(candidate.packageName)) continue;
+                if (unique != null) return;
+                unique = candidate;
+            }
+            if (unique != null && trace.bindTaskBounds(unique)) transit.updateTargetBounds(trace.id, unique);
+        } catch (Throwable unavailable) {
+            // The requested launch bounds remain the temporary anchor if task visibility is unknown.
+        } finally { Binder.restoreCallingIdentity(identity); }
+    }
+
     private void handleTargetWindow(SystemTargetWindowObserver.Event event) {
         if (event.systemPrompt) {
             TransitWindowCorrelation.Pending pending = TransitWindowCorrelation.interrupted(
@@ -457,12 +527,15 @@ public final class SystemAutonomousRuntime {
         SystemRuntimeConfig.State latest = current(trace.userId);
         if (windowObservationReady && trace.state.transitCardEnabled
                 && latest != null && latest.transitCardEnabled) {
+            SmallWindowLayout layout = latest.openLinksInSmallWindow
+                    && latest.smallWindowPackages.contains(target) ? latest.smallWindowLayout : null;
             transit.onStage(trace.id, trace.userId, trace.sourcePackage, target,
                     stage == AutonomousBridgeCoordinator.Stage.THAWING
                             ? SystemTransitPresenter.Stage.THAWING : SystemTransitPresenter.Stage.OPENING,
-                    trace.state.transitSeedColor, trace.state.transitAppearance,
-                    latest.openLinksInSmallWindow && latest.smallWindowPackages.contains(target)
-                            ? latest.smallWindowLayout : null);
+                    trace.state.transitSeedColor, trace.state.transitAppearance, layout);
+            if (layout != null && stage == AutonomousBridgeCoordinator.Stage.OPENING) {
+                anchorExistingSmallWindow(trace, target);
+            }
         }
         traceLog(trace, stage == AutonomousBridgeCoordinator.Stage.THAWING ? "thawing" : "opening", now);
     }
@@ -486,11 +559,28 @@ public final class SystemAutonomousRuntime {
         final AtomicBoolean done = new AtomicBoolean();
         volatile String targetPackage;
         volatile long thawingAt, openingAt, acceptedAt;
+        volatile TransitTaskBounds taskAnchor;
+        volatile boolean confirmedByTransitToken;
+        boolean taskLookupAttempted;
         TransitTrace(long id, int userId, String sourcePackage, SystemRuntimeConfig.State state,
                      long observedAt, long queuedAt, long startedAt) {
             this.id = id; this.userId = userId; this.state = state;
             this.sourcePackage = sourcePackage;
             this.observedAt = observedAt; this.queuedAt = queuedAt; this.startedAt = startedAt;
+        }
+        synchronized boolean bindTaskBounds(TransitTaskBounds bounds) {
+            if (done.get() || !bounds.isFreeform() || openingAt <= 0 || bounds.observedAt < openingAt
+                    || userId != bounds.userId || targetPackage == null
+                    || !targetPackage.equals(bounds.packageName)
+                    || (bounds.transitId > 0 && bounds.transitId != id)) return false;
+            TransitTaskBounds previous = taskAnchor;
+            if (previous != null && (bounds.observedAt < previous.observedAt
+                    || ((confirmedByTransitToken || bounds.transitId == 0)
+                    && (previous.taskId != bounds.taskId || (previous.taskInstance > 0
+                    && previous.taskInstance != bounds.taskInstance))))) return false;
+            taskAnchor = bounds;
+            confirmedByTransitToken |= bounds.transitId == id;
+            return true;
         }
         @Override public long id() { return id; }
         @Override public int userId() { return userId; }

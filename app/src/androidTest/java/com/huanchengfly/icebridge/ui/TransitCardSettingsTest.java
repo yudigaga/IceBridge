@@ -5,6 +5,7 @@ import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.ContentProviderClient;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
@@ -17,6 +18,9 @@ import androidx.test.runner.AndroidJUnit4;
 import com.huanchengfly.icebridge.SystemServerConfigContract;
 import com.huanchengfly.icebridge.activities.EnhanceModeActivity;
 import com.huanchengfly.icebridge.databases.AppConfig;
+import com.huanchengfly.icebridge.automation.LinkAutomationConfig;
+import com.huanchengfly.icebridge.automation.SystemRuntimeConfig;
+import com.huanchengfly.icebridge.providers.ConfigProvider;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -44,11 +48,12 @@ public class TransitCardSettingsTest {
     private static final String SMALL_WINDOW_KEY = SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW;
     private static final String SMALL_WINDOW_LABEL = "小窗打开";
     private static final String SMALL_WINDOW_PACKAGES = SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES;
+    private static final String UNIFIED_KEY = SystemServerConfigContract.KEY_RULE_UNIFIED_OPEN;
     private static final String[] ROUTING_KEYS = {
             "enhance_mode_enabled", "xhs_resolve_recovery", "auto_open_links", "native_link_capture",
             "clipboard_auto_open", "payment_sdk_bridge", "only_frozen_link_targets",
             "link_browser_fallback", SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME,
-            CARD_KEY, SMALL_WINDOW_KEY, SMALL_WINDOW_PACKAGES
+            CARD_KEY, SMALL_WINDOW_KEY, SMALL_WINDOW_PACKAGES, UNIFIED_KEY
     };
 
     @Test public void cardOptInSurvivesRecreationWithoutChangingRoutingAndRevokesStaleConfirmation() {
@@ -57,6 +62,66 @@ public class TransitCardSettingsTest {
 
     @Test public void smallWindowOptInSurvivesRecreationWithoutChangingCardOrRouting() {
         exerciseOptIn(SMALL_WINDOW_KEY, SMALL_WINDOW_LABEL);
+    }
+
+    @Test public void unifiedRoutingDefaultsOnAndTogglesWithoutChangingOtherSettings() {
+        exerciseToggle(UNIFIED_KEY, "规则内统一打开", true);
+    }
+
+    @Test public void unifiedRoutingSnapshotMatchesAppSidePolicyAndRequiresANewAcknowledgement() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        Context context = instrumentation.getTargetContext();
+        SharedPreferences preferences = context.getSharedPreferences("preferences", Context.MODE_PRIVATE);
+        SharedPreferences status = context.getSharedPreferences(
+                SystemServerConfigContract.RUNTIME_STATUS_PREFS, Context.MODE_PRIVATE);
+        Object originalValue = preferences.getAll().get(UNIFIED_KEY);
+        Object originalAutonomous = preferences.getAll().get(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME);
+        Map<String, ?> originalStatus = new HashMap<>(status.getAll());
+        try (ContentProviderClient client = context.getContentResolver().acquireContentProviderClient(ConfigProvider.URI)) {
+            assertNotNull(client);
+            ConfigProvider provider = (ConfigProvider) client.getLocalContentProvider();
+            assertNotNull("The test must use the app's real Provider instance", provider);
+            java.lang.reflect.Method build = ConfigProvider.class.getDeclaredMethod("buildSnapshot");
+            build.setAccessible(true);
+            assertTrue(preferences.edit().remove(UNIFIED_KEY)
+                    .putBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, true).commit());
+            instrumentation.waitForIdleSync();
+            SystemServerConfigContract.Snapshot enabled = SystemServerConfigContract.parse((Bundle) build.invoke(provider));
+            assertTrue(enabled.status, enabled.available);
+            assertFalse("An existing 0.0.88 user retains unified routing", enabled.onlyFrozen);
+            assertFalse(LinkAutomationConfig.isOnlyFrozenEnabled(context));
+            String enabledFingerprint = enabled.configFingerprint;
+
+            seedConfirmedStatus(status);
+            assertTrue(preferences.edit().putBoolean(UNIFIED_KEY, false).commit());
+            instrumentation.waitForIdleSync();
+            assertConfirmationRevoked(status);
+            SystemServerConfigContract.Snapshot frozenOnly = SystemServerConfigContract.parse((Bundle) build.invoke(provider));
+            assertTrue(frozenOnly.status, frozenOnly.available);
+            assertTrue(frozenOnly.onlyFrozen);
+            assertTrue(LinkAutomationConfig.isOnlyFrozenEnabled(context));
+            assertFalse("A previous acknowledgement must not authorize the changed routing policy",
+                    enabledFingerprint.equals(frozenOnly.configFingerprint));
+            SystemRuntimeConfig.State restored = SystemRuntimeConfig.decode(
+                    SystemRuntimeConfig.encode(frozenOnly.toRuntimeState(123)), 0, SystemServerConfigContract.SCHEMA_VERSION);
+            assertTrue("Frozen-body restoration must retain the selected routing policy", restored.onlyFrozen);
+
+            assertTrue(preferences.edit().putBoolean(UNIFIED_KEY, true).commit());
+            instrumentation.waitForIdleSync();
+            SystemServerConfigContract.Snapshot reenabled = SystemServerConfigContract.parse((Bundle) build.invoke(provider));
+            assertTrue(reenabled.status, reenabled.available);
+            assertFalse(reenabled.onlyFrozen);
+            assertFalse(LinkAutomationConfig.isOnlyFrozenEnabled(context));
+            assertEquals(enabledFingerprint, reenabled.configFingerprint);
+        } finally {
+            SharedPreferences.Editor edit = preferences.edit().remove(UNIFIED_KEY)
+                    .remove(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME);
+            if (originalValue != null) putPreference(edit, UNIFIED_KEY, originalValue);
+            if (originalAutonomous != null) putPreference(edit, SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, originalAutonomous);
+            edit.commit();
+            instrumentation.waitForIdleSync();
+            restoreStatus(status, originalStatus);
+        }
     }
 
     @Test public void appSelectionSavesOnlyOnConfirmationAndKeepsInvisiblePackagesAfterRecreation() {
@@ -124,6 +189,10 @@ public class TransitCardSettingsTest {
     }
 
     private static void exerciseOptIn(String key, String label) {
+        exerciseToggle(key, label, false);
+    }
+
+    private static void exerciseToggle(String key, String label, boolean defaultEnabled) {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         Context context = instrumentation.getTargetContext();
         SharedPreferences preferences = context.getSharedPreferences("preferences", Context.MODE_PRIVATE);
@@ -141,29 +210,31 @@ public class TransitCardSettingsTest {
             LitePal.deleteAll(AppConfig.class, "key = ?", key);
             activity = openSettings(instrumentation);
 
-            assertChecked(instrumentation, label, false);
-            assertFalse("An absent setting must leave the option disabled", preferences.getBoolean(key, false));
+            assertChecked(instrumentation, label, defaultEnabled);
+            assertEquals("An absent setting must use the documented default", defaultEnabled,
+                    preferences.getBoolean(key, defaultEnabled));
             Map<String, Object> routingBefore = routingPreferences(preferences, key);
             Map<String, String> databaseBefore = routingDatabase(key);
 
             seedConfirmedStatus(status);
             clickSwitch(instrumentation, label);
-            assertChecked(instrumentation, label, true);
-            assertTrue("Opting in must save the preference", preferences.getBoolean(key, false));
-            assertEquals("1", databaseValue(key));
+            assertChecked(instrumentation, label, !defaultEnabled);
+            assertEquals("Changing the option must save the preference", !defaultEnabled,
+                    preferences.getBoolean(key, defaultEnabled));
+            assertEquals(defaultEnabled ? "0" : "1", databaseValue(key));
             assertConfirmationRevoked(status);
             assertEquals("Opting in must not change other features", routingBefore, routingPreferences(preferences, key));
             assertEquals(databaseBefore, routingDatabase(key));
 
             activity = recreateSettings(instrumentation, activity);
-            assertChecked(instrumentation, label, true);
-            assertTrue(preferences.getBoolean(key, false));
+            assertChecked(instrumentation, label, !defaultEnabled);
+            assertEquals(!defaultEnabled, preferences.getBoolean(key, defaultEnabled));
 
             seedConfirmedStatus(status);
             clickSwitch(instrumentation, label);
-            assertChecked(instrumentation, label, false);
-            assertFalse(preferences.getBoolean(key, true));
-            assertEquals("0", databaseValue(key));
+            assertChecked(instrumentation, label, defaultEnabled);
+            assertEquals(defaultEnabled, preferences.getBoolean(key, !defaultEnabled));
+            assertEquals(defaultEnabled ? "1" : "0", databaseValue(key));
             assertConfirmationRevoked(status);
             assertEquals("Opting out must not change other features", routingBefore, routingPreferences(preferences, key));
             assertEquals(databaseBefore, routingDatabase(key));

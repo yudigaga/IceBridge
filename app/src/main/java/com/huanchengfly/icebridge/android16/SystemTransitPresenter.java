@@ -50,7 +50,7 @@ public final class SystemTransitPresenter {
         void show(TransitSessionPolicy.Session session) throws Exception;
         void dismiss() throws Exception;
     }
-    interface Clock { long uptimeMillis(); }
+    interface Clock { long elapsedRealtime(); }
     interface ListenerRegistration { void register(SystemTransitPresenter presenter) throws Exception; }
 
     private final Dispatcher ui;
@@ -99,7 +99,7 @@ public final class SystemTransitPresenter {
             Dispatcher dispatcher = dispatcher(handler);
             NativeWindowHost host = new NativeWindowHost(systemContext, null);
             SystemTransitPresenter presenter = new SystemTransitPresenter(dispatcher, host, logger,
-                    SystemClock::uptimeMillis, owner -> owner.listen(systemContext, handler));
+                    SystemClock::elapsedRealtime, owner -> owner.listen(systemContext, handler));
             return presenter;
         } catch (Throwable error) {
             if (logger != null) {
@@ -160,7 +160,7 @@ public final class SystemTransitPresenter {
         boolean newSession = sessions.active() == null || sessions.active().id != id;
         if (!sessions.stage(id, userId, sourcePackage, targetPackage, stage == Stage.THAWING
                 ? TransitSessionPolicy.THAWING : TransitSessionPolicy.OPENING,
-                seed, appearance, smallWindowLayout, clock.uptimeMillis())) return;
+                seed, appearance, smallWindowLayout, clock.elapsedRealtime())) return;
         if (!listening) {
             try {
                 registration.register(this);
@@ -192,9 +192,9 @@ public final class SystemTransitPresenter {
             window.show(sessions.active());
             if (newSession) {
                 log("transit shown: id=" + id + ", user=" + userId);
-                long remaining = Math.max(0, sessions.active().deadline - clock.uptimeMillis());
+                long remaining = Math.max(0, sessions.active().deadline - clock.elapsedRealtime());
                 ui.postDelayed(() -> guarded(() -> {
-                    if (sessions.timeout(id, clock.uptimeMillis())) dismiss("timeout");
+                    if (sessions.timeout(id, clock.elapsedRealtime())) dismiss("timeout");
                 }), remaining);
             }
         } catch (Throwable error) {
@@ -214,6 +214,23 @@ public final class SystemTransitPresenter {
 
     /** A framework launch request can return before the target has drawn its first window. */
     public void onSubmitted(long id) { post(() -> sessions.submitted(id)); }
+
+    public void updateTargetBounds(long id, TransitTaskBounds bounds) {
+        if (bounds == null) return;
+        post(() -> {
+            if (!visibility.enabled || !sessions.targetBounds(id, bounds)) return;
+            if (!window.canShow()) {
+                sessions.finish(id);
+                dismiss("display-not-available");
+                return;
+            }
+            try { window.show(sessions.active()); }
+            catch (Throwable unavailable) {
+                sessions.finish(id);
+                dismiss("bounds-update-failed:" + unavailable.getClass().getSimpleName());
+            }
+        });
+    }
 
     public void onTargetDrawn(long id, int userId, String targetPackage) {
         post(() -> {
@@ -299,7 +316,7 @@ public final class SystemTransitPresenter {
         Handler handler = new Handler(activity.getMainLooper());
         SystemTransitPresenter presenter = new SystemTransitPresenter(dispatcher(handler),
                 new NativeWindowHost(activity, token),
-                logger, SystemClock::uptimeMillis);
+                logger, SystemClock::elapsedRealtime);
         presenter.setEnabled(true);
         return presenter;
     }
@@ -383,7 +400,9 @@ public final class SystemTransitPresenter {
         @SuppressLint("RtlHardcoded")
         private WindowManager.LayoutParams parameters(TransitSessionPolicy.Session session) throws Exception {
             boolean smallWindow = session.smallWindowLayout != null;
-            Rect area = smallWindow ? SystemWindowLayout.resolve(windowContext, session.smallWindowLayout)
+            TransitTaskBounds actual = session.taskBounds;
+            Rect area = actual != null ? new Rect(actual.left, actual.top, actual.right, actual.bottom)
+                    : smallWindow ? SystemWindowLayout.resolve(windowContext, session.smallWindowLayout)
                     : SystemWindowLayout.availableBounds(windowContext);
             int preferredWidth = dp(smallWindow ? 156 : 208);
             int preferredHeight = dp(smallWindow ? 72 : 96);

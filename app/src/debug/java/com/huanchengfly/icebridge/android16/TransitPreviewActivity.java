@@ -1,7 +1,9 @@
 package com.huanchengfly.icebridge.android16;
 
 import android.app.Activity;
+import android.graphics.Rect;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -72,6 +74,11 @@ public final class TransitPreviewActivity extends Activity {
     }
 
     public void submitted(long id) { presenter.onSubmitted(id); }
+    public void targetBounds(long id, int taskId, long taskInstance, Rect bounds) {
+        presenter.updateTargetBounds(id, new TransitTaskBounds(id, taskInstance, taskId, 0,
+                targetPackage, 0, 5, bounds.left, bounds.top, bounds.right, bounds.bottom,
+                SystemClock.elapsedRealtime()));
+    }
     public void targetDrawn(long id) { presenter.onTargetDrawn(id, 0, targetPackage); }
     public void fail(long id) { presenter.finish(id, "preview-failure"); }
     public View card() { return presenter == null ? null : presenter.previewCard(); }

@@ -40,6 +40,7 @@ import com.huanchengfly.icebridge.android16.SystemServerPackageStateProbe;
 import com.huanchengfly.icebridge.android16.SystemAutonomousRuntime;
 import com.huanchengfly.icebridge.android16.SystemAutonomousCapture;
 import com.huanchengfly.icebridge.android16.SystemTargetWindowObserver;
+import com.huanchengfly.icebridge.android16.SystemTaskBoundsObserver;
 import com.huanchengfly.icebridge.android16.AtmsBinderSignatureResolver;
 import com.huanchengfly.icebridge.android16.SystemLaunchPreflight;
 import com.huanchengfly.icebridge.android16.ActivityStarterTakeoverPolicy;
@@ -119,6 +120,7 @@ public final class IceBridgeModule extends XposedModule {
     private volatile boolean targetWindowObservationReady;
     private volatile ClassLoader systemServerClassLoader;
     private final SystemTargetWindowObserver targetWindows = new SystemTargetWindowObserver();
+    private final SystemTaskBoundsObserver taskBounds = new SystemTaskBoundsObserver(targetWindows);
     private volatile SystemRuntimeConfig.State compatibilityState;
     private volatile RecoveryConfiguration compatibilityConfiguration;
     private final BoundedExpiringDeduplicator autonomousObservations =
@@ -209,6 +211,7 @@ public final class IceBridgeModule extends XposedModule {
                         return result;
                     });
             targetWindowObservationReady = true;
+            installTaskBoundsHooks(loader);
             Method resumed = SystemTargetWindowObserver.zeroArg(recordClass, "completeResumeLocked");
             if (resumed != null) hook(resumed).setId("icebridge:transit-target-resumed")
                     .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain -> {
@@ -255,10 +258,32 @@ public final class IceBridgeModule extends XposedModule {
         }
     }
 
+    private void installTaskBoundsHooks(ClassLoader loader) {
+        try {
+            Class<?> task = loader.loadClass("com.android.server.wm.Task");
+            Method changed = task.getDeclaredMethod("onConfigurationChanged",
+                    android.content.res.Configuration.class);
+            changed.setAccessible(true);
+            hook(changed).setId("icebridge:transit-task-bounds")
+                    .setExceptionMode(XposedInterface.ExceptionMode.PROTECTIVE).intercept(chain -> {
+                        Object result = chain.proceed();
+                        SystemAutonomousRuntime runtime = autonomousRuntime;
+                        if (runtime != null && runtime.observesTaskBounds()) {
+                            runtime.onTaskBounds(taskBounds.read(chain.getThisObject()));
+                        }
+                        return result;
+                    });
+            log(4, TAG, "transit task bounds hook installed");
+        } catch (Throwable unavailable) {
+            log(5, TAG, "transit task bounds hook limited: " + unavailable.getClass().getSimpleName());
+        }
+    }
+
     private void postTargetWindow(Object record, boolean requireVisible) {
         try {
             SystemAutonomousRuntime runtime = autonomousRuntime;
             if (runtime != null && runtime.observesTargetWindows()) {
+                if (runtime.observesTaskBounds()) runtime.onTaskBounds(taskBounds.readActivity(record));
                 runtime.onTargetWindow(targetWindows.read(record, requireVisible));
             }
         } catch (Throwable ignored) {
@@ -959,7 +984,8 @@ public final class IceBridgeModule extends XposedModule {
                         captured.sourcePackage, uri.getHost());
                 List<String> candidates = ScopedRuleResolver.targetPackages(matches);
                 LinkRuleEntry selected = ScopedRuleResolver.selectRule(matches,
-                        new LinkedHashSet<>(ScopedRuleResolver.targetPackages(matches)));
+                        configuration.onlyFrozen ? configuration.frozenPackages
+                                : new LinkedHashSet<>(ScopedRuleResolver.targetPackages(matches)));
                 target = selected == null ? null : selected.targetPackage;
                 conversion = selected == null ? LinkRuleEntry.CONVERSION_NONE : selected.urlConversion;
                 log(4, TAG, "native target candidates: host=" + uri.getHost()
@@ -1035,9 +1061,9 @@ public final class IceBridgeModule extends XposedModule {
                     + ", component=" + componentOf(original) + ", package=" + packageOf(original));
             return null;
         }
-        // Matched web rules own enabled targets too. Direct schemes retain their original-call
-        // safety policy, and the one-use replay token above prevents bridge recursion.
-        if (NativeBridgePolicy.shouldBypass(prewarmOnly, captured != null,
+        // Enabled targets are taken over only while unified rule routing is enabled.
+        // Direct schemes and signed payment SDK requests keep their original-call safeguards.
+        if (NativeBridgePolicy.shouldBypass(prewarmOnly, captured != null, configuration.onlyFrozen,
                 configuration.frozenPackages, target)) {
             log(4, TAG, "native bridge skipped: target already enabled or snapshot stale: target="
                     + target + ", source=" + bridgeSource);
@@ -1837,7 +1863,7 @@ public final class IceBridgeModule extends XposedModule {
             }
             return parsed.available
                     ? RecoveryConfiguration.available(parsed.recoveryEnabled, parsed.autoOpenLinks,
-                    parsed.nativeLinkCapture, parsed.clipboardAutoOpen, parsed.paymentSdkBridge,
+                    parsed.nativeLinkCapture, parsed.clipboardAutoOpen, parsed.paymentSdkBridge, parsed.onlyFrozen,
                     parsed.frozenPackages, parsed.onlineHostRules, parsed.userId)
                     : RecoveryConfiguration.unavailable(parsed.status);
         } catch (Throwable error) {
@@ -1863,6 +1889,7 @@ public final class IceBridgeModule extends XposedModule {
         final boolean nativeLinkCapture;
         final boolean clipboardAutoOpen;
         final boolean paymentSdkBridge;
+        final boolean onlyFrozen;
         final String status;
         final Set<String> frozenPackages;
         final String[] onlineHostRules;
@@ -1873,7 +1900,7 @@ public final class IceBridgeModule extends XposedModule {
 
         private RecoveryConfiguration(boolean available, boolean enabled, boolean autoOpenLinks,
                                       boolean nativeLinkCapture, boolean clipboardAutoOpen,
-                                      boolean paymentSdkBridge, String status,
+                                      boolean paymentSdkBridge, boolean onlyFrozen, String status,
                                       Set<String> frozenPackages, String[] onlineHostRules, int userId) {
             this.available = available;
             this.enabled = enabled;
@@ -1881,6 +1908,7 @@ public final class IceBridgeModule extends XposedModule {
             this.nativeLinkCapture = nativeLinkCapture;
             this.clipboardAutoOpen = clipboardAutoOpen;
             this.paymentSdkBridge = paymentSdkBridge;
+            this.onlyFrozen = onlyFrozen;
             this.status = status;
             this.frozenPackages = frozenPackages;
             this.onlineHostRules = onlineHostRules == null ? new String[0] : onlineHostRules.clone();
@@ -1899,15 +1927,15 @@ public final class IceBridgeModule extends XposedModule {
 
         static RecoveryConfiguration available(boolean enabled, boolean autoOpenLinks,
                                                boolean nativeLinkCapture, boolean clipboardAutoOpen,
-                                               boolean paymentSdkBridge, Set<String> frozenPackages,
+                                               boolean paymentSdkBridge, boolean onlyFrozen, Set<String> frozenPackages,
                                                String[] onlineHostRules, int userId) {
             return new RecoveryConfiguration(true, enabled, autoOpenLinks, nativeLinkCapture,
-                    clipboardAutoOpen, paymentSdkBridge, SystemServerConfigContract.STATUS_OK,
+                    clipboardAutoOpen, paymentSdkBridge, onlyFrozen, SystemServerConfigContract.STATUS_OK,
                     frozenPackages == null ? Collections.emptySet() : frozenPackages, onlineHostRules, userId);
         }
 
         static RecoveryConfiguration unavailable(String status) {
-            return new RecoveryConfiguration(false, false, false, false, false, false, status,
+            return new RecoveryConfiguration(false, false, false, false, false, false, true, status,
                     Collections.emptySet(), new String[0], -1);
         }
 
@@ -1918,6 +1946,7 @@ public final class IceBridgeModule extends XposedModule {
             nativeLinkCapture = state.nativeLinkCapture;
             clipboardAutoOpen = state.clipboardAutoOpen;
             paymentSdkBridge = state.paymentSdkBridge;
+            onlyFrozen = state.onlyFrozen;
             status = "autonomous-persisted";
             userId = state.userId;
             frozenPackages = Collections.emptySet(); // Independent routing always reads live PM state.
@@ -2328,7 +2357,8 @@ public final class IceBridgeModule extends XposedModule {
         }
         List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(configuration.scopedRules, "*", host);
         List<String> candidates = ScopedRuleResolver.targetPackages(matches);
-        LinkRuleEntry selected = ScopedRuleResolver.selectRule(matches, new LinkedHashSet<>(candidates));
+        LinkRuleEntry selected = ScopedRuleResolver.selectRule(matches, configuration.onlyFrozen
+                ? configuration.frozenPackages : new LinkedHashSet<>(candidates));
         String target = selected == null ? null : selected.targetPackage;
         if (target == null) {
             log(4, TAG, "clipboard skipped: no_rule host=" + host);
@@ -2501,15 +2531,15 @@ public final class IceBridgeModule extends XposedModule {
         if (httpLink) {
             List<String> candidates = CustomSchemeTargetResolver.findTargetPackagesForUri(
                     scheme, data.getHost(), configuration.onlineHostCandidates);
-            target = NativeBridgePolicy.selectCandidate(candidates, configuration.frozenPackages);
+            target = configuration.onlyFrozen
+                    ? NativeBridgePolicy.selectCandidate(candidates, configuration.frozenPackages)
+                    : (candidates.size() == 1 ? candidates.get(0) : null);
             log(4, TAG, "Chrome HTTP(S) candidates: host=" + data.getHost()
                     + ", candidates=" + candidates + ", selected=" + target);
-            // Chrome is only an observation point for ordinary web links. Do not rewrite a link
-            // merely because a rule names a package: only a package present in the current frozen
-            // snapshot needs the foreground thaw bridge. This also prevents stale/unknown state
-            // from selecting the first shared-host candidate and causing a second launch.
+            // Without unified routing, enabled or unknown targets retain the original call.
+            // With it, a unique matched target may route directly without a thaw.
             if (target == null || NativeBridgePolicy.shouldBypass(
-                    false, configuration.frozenPackages, target)) {
+                    false, true, configuration.onlyFrozen, configuration.frozenPackages, target)) {
                 log(4, TAG, "Chrome HTTP(S) pass-through: target not frozen or state unknown"
                         + ", host=" + data.getHost() + ", target=" + target);
                 return original;

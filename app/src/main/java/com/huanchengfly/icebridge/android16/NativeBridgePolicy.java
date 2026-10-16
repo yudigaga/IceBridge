@@ -49,8 +49,13 @@ public final class NativeBridgePolicy {
 
     public static boolean shouldBypass(boolean prewarmOnly, boolean matchedWebRule,
                                        Set<String> frozenPackages, String target) {
-        // A reviewed web rule owns the handoff even when its installed target is already enabled.
-        if (matchedWebRule && target != null) return false;
+        return shouldBypass(prewarmOnly, matchedWebRule, true, frozenPackages, target);
+    }
+
+    public static boolean shouldBypass(boolean prewarmOnly, boolean matchedWebRule,
+                                       boolean onlyFrozen, Set<String> frozenPackages, String target) {
+        // Enabled-target replacement is limited to reviewed rules with unified routing enabled.
+        if (matchedWebRule && !onlyFrozen && target != null) return false;
         // Payment prewarming is deliberately independent: Alipay keeps its original SDK intent.
         if (prewarmOnly) {
             return false;

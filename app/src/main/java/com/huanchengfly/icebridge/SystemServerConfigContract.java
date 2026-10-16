@@ -35,6 +35,8 @@ public final class SystemServerConfigContract {
     public static final String KEY_USER_ID = "snapshot_user_id";
     public static final String KEY_AUTONOMOUS_RUNTIME = "autonomous_runtime_enabled";
     public static final String KEY_ONLY_FROZEN = "only_frozen_link_targets";
+    /** UI choice; the existing wire/persistent onlyFrozen flag carries its inverse. */
+    public static final String KEY_RULE_UNIFIED_OPEN = "rule_unified_open";
     public static final String KEY_BROWSER_FALLBACK = "link_browser_fallback";
     public static final String KEY_ONLINE_UPDATES = "online_link_rule_updates";
     public static final String KEY_ONLINE_REVISION = "online_rules_highest_revision";

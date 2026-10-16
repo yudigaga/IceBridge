@@ -15,6 +15,7 @@ public final class LinkAutomationConfig {
     public static final String KEY_NATIVE_LINK_CAPTURE = "native_link_capture";
     public static final String KEY_PAYMENT_SDK_BRIDGE = "payment_sdk_bridge";
     public static final String KEY_ONLY_FROZEN = "only_frozen_link_targets";
+    public static final String KEY_RULE_UNIFIED_OPEN = "rule_unified_open";
     public static final String KEY_BROWSER_FALLBACK = "link_browser_fallback";
     public static final String KEY_CLIPBOARD = "clipboard_auto_open";
     public static final String KEY_CUSTOM_MAPPINGS = "custom_url_mappings";
@@ -36,7 +37,7 @@ public final class LinkAutomationConfig {
     }
 
     public static boolean isOnlyFrozenEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_ONLY_FROZEN, true);
+        return !prefs(context).getBoolean(KEY_RULE_UNIFIED_OPEN, true);
     }
 
     public static boolean isBrowserFallbackEnabled(Context context) {

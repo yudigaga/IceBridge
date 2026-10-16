@@ -31,6 +31,54 @@ import static org.junit.Assert.*;
 /** Uses an application token to verify the same native card without asking for overlay permission. */
 @RunWith(AndroidJUnit4.class)
 public class SystemTransitRenderingTest {
+    @Test public void cardTracksActualTaskMovesAndResizesIndependentlyOfDisplayChanges() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        TransitPreviewActivity activity = openSmallWindow(instrumentation, false, SmallWindowLayout.DEFAULT);
+        try {
+            assertCompactCard(instrumentation, activity, "正在解冻");
+            awaitFocusedAndLaidOut(instrumentation, activity);
+            AtomicReference<Rect> actual = new AtomicReference<>();
+            instrumentation.runOnMainSync(() -> {
+                Rect available = SystemWindowLayout.availableBounds(activity);
+                Rect first = new Rect(available.left + available.width() / 12,
+                        available.top + available.height() / 10,
+                        available.left + available.width() * 7 / 12,
+                        available.top + available.height() * 6 / 10);
+                actual.set(first);
+                activity.show(1, SystemTransitPresenter.Stage.OPENING, 0xff7e57c2, "light");
+                activity.targetBounds(1, 7, 11, first);
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> assertActualPlacement(activity.card(), actual.get()));
+            instrumentation.runOnMainSync(() -> {
+                Rect available = SystemWindowLayout.availableBounds(activity);
+                Rect resized = new Rect(available.right - available.width() / 3,
+                        available.bottom - available.height() / 3, available.right, available.bottom);
+                actual.set(resized);
+                activity.targetBounds(1, 7, 11, resized);
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> {
+                assertActualPlacement(activity.card(), actual.get());
+                activity.targetDrawn(1);
+                activity.targetBounds(1, 7, 11, new Rect(0, 0, 200, 300));
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> assertNull("A late move must never recreate a dismissed card",
+                    activity.card()));
+        } finally { instrumentation.runOnMainSync(activity::finish); }
+    }
+
+    private static void assertActualPlacement(View card, Rect area) {
+        assertNotNull(card);
+        int[] location = new int[2];
+        card.getLocationOnScreen(location);
+        assertEquals(area.centerX(), location[0] + card.getWidth() / 2, 2);
+        assertEquals(area.centerY(), location[1] + card.getHeight() / 2, 2);
+        assertTrue(card.getWidth() <= area.width());
+        assertTrue(card.getHeight() <= area.height());
+    }
+
     @Test public void smallWindowCardIsSmallerAndCenteredInOffCenterTargetBounds() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         SmallWindowLayout layout = new SmallWindowLayout(60, 50, 100, 0);

@@ -181,6 +181,29 @@ public class SystemRuntimeConfigTest {
         assertFalse(SystemRuntimeConfig.fingerprint(one).equals(SystemRuntimeConfig.fingerprint(differentSwitch)));
     }
 
+    @Test public void unifiedRoutingChoiceSurvivesFrozenBodyRestoreAndOnlineRefreshWithDistinctAcknowledgements() throws Exception {
+        String raw = bundle(5, BUNDLE_RULE);
+        SystemRuntimeConfig.OnlineState online = new SystemRuntimeConfig.OnlineState(raw, hash(raw), "", "", 5, hash(raw), true);
+        SystemRuntimeConfig.State baseline = state(0, new String[]{RULE, ONLINE}, online);
+        java.util.Set<String> fingerprints = new java.util.HashSet<>();
+        for (boolean onlyFrozen : new boolean[]{true, false}) {
+            JsonObject json = JsonParser.parseString(new String(SystemRuntimeConfig.encode(baseline),
+                    StandardCharsets.UTF_8)).getAsJsonObject();
+            json.addProperty("onlyFrozen", onlyFrozen);
+            SystemRuntimeConfig.State restored = SystemRuntimeConfig.decode(
+                    json.toString().getBytes(StandardCharsets.UTF_8), 0, SCHEMA);
+            assertEquals(onlyFrozen, restored.onlyFrozen);
+            assertArrayEquals(baseline.encodedRules(), restored.encodedRules());
+            assertEquals(raw, restored.online.activeRaw);
+            assertEquals(5, restored.online.highestRevision);
+            SystemRuntimeConfig.State refreshed = restored.withOnline(restored.online, restored.encodedRules(), 99999);
+            assertEquals(onlyFrozen, refreshed.onlyFrozen);
+            assertEquals(SystemRuntimeConfig.fingerprint(restored), SystemRuntimeConfig.fingerprint(refreshed));
+            fingerprints.add(SystemRuntimeConfig.fingerprint(restored));
+        }
+        assertEquals("Frozen-only and unified routing must never share a system acknowledgement", 2, fingerprints.size());
+    }
+
     @Test public void oldVersionOneEnvelopeDefaultsThemeWithoutLosingRulesOrOnlineHighWater() throws Exception {
         String old = bundle(4, BUNDLE_RULE), latest = bundle(5, "");
         SystemRuntimeConfig.OnlineState online = new SystemRuntimeConfig.OnlineState(latest,

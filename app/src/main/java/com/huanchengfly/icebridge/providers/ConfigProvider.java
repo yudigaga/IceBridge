@@ -180,7 +180,9 @@ public class ConfigProvider extends ContentProvider {
                     smallWindowLayout.horizontalPercent, smallWindowLayout.verticalPercent});
             boolean autonomous = preferences.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false);
             snapshot.putBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, autonomous);
-            snapshot.putBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN, false);
+            // Keep the wire format and v0.0.88 behavior compatible; switching off restores frozen-only routing.
+            snapshot.putBoolean(SystemServerConfigContract.KEY_ONLY_FROZEN,
+                    !preferences.getBoolean(SystemServerConfigContract.KEY_RULE_UNIFIED_OPEN, true));
             snapshot.putBoolean(SystemServerConfigContract.KEY_BROWSER_FALLBACK,
                     preferences.getBoolean(LinkAutomationConfig.KEY_BROWSER_FALLBACK, true));
             snapshot.putBoolean(SystemServerConfigContract.KEY_ONLINE_UPDATES, OnlineLinkRuleRepository.isEnabled(getContext()));

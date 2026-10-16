@@ -20,7 +20,7 @@ final class ConfigProviderValueValidator {
                     "clipboard_auto_open", "payment_sdk_bridge", "module_debug_logging",
                     "enhance_mode_enabled", "custom_mappings", "custom_url_mappings",
                     "bridge_config", "config", "hide_bridge_from_recents",
-                    "only_frozen_link_targets", "link_browser_fallback", "autonomous_runtime_enabled"
+                    "only_frozen_link_targets", "rule_unified_open", "link_browser_fallback", "autonomous_runtime_enabled"
             )));
 
     private ConfigProviderValueValidator() {

@@ -120,7 +120,7 @@ public final class AutonomousBridgeCoordinator<P> {
         /** False for observations/clipboard and THAW_ONLY: the original call still belongs to Android. */
         public final boolean ownsOriginal;
         public final boolean autoOpen;
-        /** Legacy wire preference; matched web rules always route, independent of freeze state. */
+        /** True when the user disables unified rule routing and retains frozen-only handling. */
         public final boolean onlyFrozen;
 
         public Request(Kind kind, int userId, String sourcePackage, String host,
@@ -210,7 +210,7 @@ public final class AutonomousBridgeCoordinator<P> {
                 Capabilities capability = packages.capabilities();
                 if (capability == null || (state.isDisabled() && !capability.enableDisabled)
                         || (state.hidden && !capability.unhide)) return null;
-            } else if (!state.isLaunchable()) return null;
+            } else if (request.onlyFrozen || !state.isLaunchable()) return null;
             return new Plan(selected.target, selected.conversion);
         } catch (Throwable ignored) {
             // An uncertain preflight leaves the original request with Android.
@@ -238,7 +238,7 @@ public final class AutonomousBridgeCoordinator<P> {
             if (protectedPackage.equals(target)) return preserve(request, target, "self-thaw-prohibited");
             State before = selected.state;
             if (!before.isRecoverable()) {
-                if (request.kind == Kind.WEB_RULE && request.autoOpen
+                if (request.kind == Kind.WEB_RULE && request.autoOpen && !request.onlyFrozen
                         && before.isLaunchable()) {
                     try {
                         notifyStage(request, target, Stage.OPENING);
@@ -327,7 +327,7 @@ public final class AutonomousBridgeCoordinator<P> {
         for (LinkRuleEntry rule : installed) {
             State state = states.get(rule.targetPackage);
             if (state.suspended) return Selection.none("suspended-unsupported");
-            if (state.isRecoverable() || state.isLaunchable()) {
+            if (state.isRecoverable() || (!request.onlyFrozen && state.isLaunchable())) {
                 eligible.put(rule.targetPackage, state);
             }
         }

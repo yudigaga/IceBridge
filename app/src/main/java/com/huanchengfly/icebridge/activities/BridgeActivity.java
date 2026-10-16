@@ -265,8 +265,13 @@ public class BridgeActivity extends BaseActivity {
     private boolean matchesNativeRule(String target, Uri uri, String sourcePackage) {
         List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(
                 RuleConfigRepository.installedRuleEntries(this), sourcePackage, uri.getHost());
-        LinkRuleEntry selected = ScopedRuleResolver.selectRule(matches,
-                new java.util.HashSet<>(ScopedRuleResolver.targetPackages(matches)));
+        java.util.Set<String> eligible = new java.util.HashSet<>(ScopedRuleResolver.targetPackages(matches));
+        if (LinkAutomationConfig.isOnlyFrozenEnabled(this) && eligible.size() > 1) {
+            // Match the system's frozen-only disambiguation. A unique already-claimed target may
+            // have been thawed while the bridge was starting, so keep that handoff valid.
+            eligible.removeIf(this::isTargetEnabled);
+        }
+        LinkRuleEntry selected = ScopedRuleResolver.selectRule(matches, eligible);
         if (selected == null || !target.equals(selected.targetPackage)) return false;
         String transportedConversion = getIntent().getStringExtra("rule_conversion");
         if (!selected.urlConversion.equals(transportedConversion)) return false;

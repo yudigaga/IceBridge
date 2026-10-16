@@ -2,7 +2,7 @@
 
 0.0.82 增加可选的系统独立运行模式。IceBridge 被 IceBox 禁用或隐藏后，已注入 `system_server` 的模块使用系统保存的配置处理链接、剪贴板、支付预解冻和在线规则更新，整个处理过程不需要解冻或启动 IceBridge 本体。
 
-推荐使用 0.0.88 或更新版本。0.0.83 修复普通微信／QQ 跳转的来源令牌误判；0.0.85 接管原始 WebView 点击；0.0.86 在目标启动画面／应用窗口展示时收卡；0.0.87 增加卡片和指定应用小窗开关；0.0.88 增加带预览的尺寸位置设置、小窗内紧凑卡片，并让规则命中后的路由不再受目标冻结状态限制。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)和[卡片及计时](TRANSIT_PROGRESS.md)说明了具体行为。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
+推荐使用 0.0.89 或更新版本。0.0.89 把“规则内统一打开”改为默认开启的独立开关，将小窗设置改为真实屏幕线框调节，并让卡片跟随实际小窗移动／缩放。此前的原始点击接管、目标首窗显示后收卡和指定应用小窗继续保留。[故障原因与回归](FROZEN_CAPTURE_DIAGNOSIS.md)和[卡片及计时](TRANSIT_PROGRESS.md)说明了具体行为。覆盖安装后重启设备，等待新系统模块确认配置，再冻结本体。
 
 当前只接收用户 0 的配置。工作资料和其他用户不会继承该配置；目标被挂起（suspended）、卸载或状态无法确认时不解冻。实际 ROM 的系统接口、SELinux 和冻结后重启注入仍需单独验收。
 
@@ -18,9 +18,11 @@
 
 “跳转行为 → 小窗打开”也默认关闭，与卡片开关互不依赖。点击“小窗应用”搜索并勾选目标，确认后才保存；取消不会改变已保存的名单。开启总开关后，只有被勾选且由独立模式接管的普通链接目标请求系统小窗，未选应用及空名单仍按普通方式打开。被冻结或暂不可见的规则目标仍可选择，已保存的暂不可见包名也保留并可取消选择。最多选择 512 个目标；顺序和重复包名不改变配置身份，修改名单会撤销旧的系统确认。
 
-“小窗尺寸与位置”提供四个滑杆：宽度 30～95%、高度 25～95%、水平和垂直位置 0～100%。预览立即响应，保存前只修改草稿；“恢复默认”同样先预览，点击“保存设置”后才同步。默认宽度 70%、高度 60%，水平和垂直居中。尺寸按排除系统栏与刘海的可用显示区域计算，位置按剩余移动范围计算，确保请求范围不越界；横竖屏重新计算。该布局统一用于已选的小窗目标，系统仍可调整最终大小和位置。
+“小窗尺寸与位置 → 开始屏幕调节”在真实屏幕上显示与目标大小一致的线框。设置页退到后台，原应用／桌面作为实际背景；拖动线框内部移动，拖动边缘或圆点改变大小，中央小卡片同步跟随。底部“恢复默认”只改变草稿，“保存”才写入并隐藏整层，“取消”或返回直接隐藏不保存。调节器是独立透明 Activity，不需要悬浮窗权限，不会解冻或启动目标。
 
-命中普通链接规则时，目标已启用也由模块打开，冻结时才执行解冻。旧“仅处理被冻结的应用”设置不再限制规则路径，界面移除该开关；同优先级多个不同目标继续判为歧义，不按冻结状态选择目标。除既有微信／QQ 载荷外，身份和前台状态可确认、没有私有载荷／授权的隐式 HTTP(S) `ACTION_VIEW` 也可以独占接管，避免与原浏览器并行启动。
+宽度范围仍为 30～95%、高度 25～95%，水平和垂直位置为 0～100%；默认 `70,60,50,50`。线框按排除系统栏和刘海的实际显示区域计算，结束手势时对齐同一整数百分比存储规则。布局统一用于已选目标；实际目标仍受 ROM 多窗口策略限制。
+
+“规则内统一打开”默认开启，保留 0.0.88 行为：匹配的已启用目标也由模块打开，冻结时先解冻。关闭后仅接管冻结目标，已启用目标保留原始流程；已认领的冻结点击在排队期间解冻不会丢失。开关映射现有 `onlyFrozen` 的反向值，进入同一配置指纹和持久文件，在线更新不会覆盖。独立运行、普通桥接和剪贴板路径均遵循它。同优先级多个目标仍保留歧义和来源优先级保护。
 
 不修改全局多窗口或强制调整应用大小设置。支付 SDK、真实结果调用、仅预解冻的原始启动链及原网页回放不附加小窗参数；剪贴板跳转失败后的浏览器回退也保留普通方式。关闭后后续请求不再附加小窗选项，不强行改变已经打开的任务。
 
@@ -74,9 +76,9 @@
 ```powershell
 ./tools/autonomous-fixture/build.ps1 -SdkRoot $env:ANDROID_HOME -JdkRoot $env:JAVA_HOME
 adb -s emulator-5556 root
-adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.88-debug.apk
+adb -s emulator-5556 install -r app/build/outputs/apk/debug/IceBridge-v0.0.89-debug.apk
 adb -s emulator-5556 install -r tools/autonomous-fixture/build/icebridge-autonomous-fixture.apk
-adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.88-debug.apk /data/local/tmp/icebridge-autonomous.apk
+adb -s emulator-5556 push app/build/outputs/apk/debug/IceBridge-v0.0.89-debug.apk /data/local/tmp/icebridge-autonomous.apk
 adb -s emulator-5556 shell 'su 1000 sh -c "CLASSPATH=/data/local/tmp/icebridge-autonomous.apk app_process /system/bin com.huanchengfly.icebridge.android16.AutonomousRuntimeHarness save"'
 adb -s emulator-5556 shell pm disable-user --user 0 io.github.yudigaga.icebridge
 adb -s emulator-5556 shell pm hide --user 0 io.github.yudigaga.icebridge

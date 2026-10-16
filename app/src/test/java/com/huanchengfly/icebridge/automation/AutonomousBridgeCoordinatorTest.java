@@ -53,10 +53,10 @@ public class AutonomousBridgeCoordinatorTest {
         assertEquals(0, f.launcher.fallbacks);
     }
 
-    @Test public void prepareRequiresWebAutoOpenKnownUserAndAcceptsEnabledRulesWithLegacyFrozenOnly() {
+    @Test public void prepareRequiresWebAutoOpenKnownUserAndUnifiedRoutingForEnabledRules() {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, READY);
-        assertNotNull(f.worker.prepare(request(Kind.WEB_RULE, 0, SOURCE, "legacy-frozen-only", true, true), rules()));
+        assertNull(f.worker.prepare(request(Kind.WEB_RULE, 0, SOURCE, "frozen-only", true, true), rules()));
         AutonomousBridgeCoordinator.Request<Object> allowEnabled = new AutonomousBridgeCoordinator.Request<>(
                 Kind.WEB_RULE, 0, SOURCE, "example.com", null, "enabled", new Object(), true, true, false);
         AutonomousBridgeCoordinator.Plan plan = f.worker.prepare(allowEnabled, rules());
@@ -122,12 +122,67 @@ public class AutonomousBridgeCoordinatorTest {
     @Test public void enabledRuleUsesModuleRouteWithoutThawingOrReplayingOriginal() {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, READY);
-        assertEquals(Outcome.ROUTED, f.worker.execute(request(Kind.WEB_RULE, 0, SOURCE,
-                "a", true, true), rules()).outcome);
+        assertEquals(Outcome.ROUTED, f.worker.execute(new AutonomousBridgeCoordinator.Request<>(
+                Kind.WEB_RULE, 0, SOURCE, "example.com", null, "a", new Object(), true, true, false), rules()).outcome);
         assertTrue(f.packages.thaws.isEmpty());
         assertEquals(0, f.launcher.fallbacks);
         assertEquals(1, f.launcher.launches);
         assertEquals(TARGET, f.launcher.target);
+    }
+
+    @Test public void frozenOnlyPreservesEnabledWebTargetWithoutProgressOrDedupReservation() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, READY);
+        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
+                SOURCE, "frozen-only-opt-out", false, true);
+        assertTrue(request.onlyFrozen);
+        assertNull(f.worker.prepare(request, rules()));
+        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request, rules()).outcome);
+        assertEquals(0, f.launcher.launches);
+        assertEquals(0, f.launcher.fallbacks);
+        assertTrue(f.progress.isEmpty());
+        assertTrue(f.packages.thaws.isEmpty());
+        // An opt-out observation must not prevent the same click from being handled after freezing.
+        f.packages.put(0, TARGET, FROZEN);
+        assertNotNull(f.worker.prepare(request, rules()));
+        assertEquals(Outcome.ROUTED, f.worker.execute(request, rules()).outcome);
+        assertEquals(1, f.launcher.launches);
+    }
+
+    @Test public void frozenWebTargetsRouteInBothSwitchStates() {
+        for (boolean onlyFrozen : Arrays.asList(true, false)) {
+            Fixture f = new Fixture();
+            f.packages.put(0, TARGET, FROZEN);
+            AutonomousBridgeCoordinator.Request<Object> request = new AutonomousBridgeCoordinator.Request<>(
+                    Kind.WEB_RULE, 0, SOURCE, "example.com", null, "frozen", new Object(), true, true, onlyFrozen);
+            assertNotNull(f.worker.prepare(request, rules()));
+            assertEquals(Outcome.ROUTED, f.worker.execute(request, rules()).outcome);
+            assertEquals(Collections.singletonList("0:" + TARGET), f.packages.thaws);
+            assertEquals(1, f.launcher.launches);
+            assertEquals(0, f.launcher.fallbacks);
+        }
+    }
+
+    @Test public void frozenOnlyMaySelectFrozenPeerButCannotBypassHigherManualRule() {
+        Fixture f = new Fixture();
+        f.packages.put(0, TARGET, FROZEN);
+        f.packages.put(0, OTHER, READY);
+        assertEquals(Outcome.ROUTED, f.worker.execute(request(Kind.WEB_RULE, 0,
+                SOURCE, "shared-host", false, true), Arrays.asList(rule("*", OTHER, "online", "none"),
+                rule("*", TARGET, "online", "none"))).outcome);
+        assertEquals(TARGET, f.launcher.target);
+
+        Fixture manual = new Fixture();
+        manual.packages.put(0, TARGET, READY);
+        manual.packages.put(0, OTHER, FROZEN);
+        assertNull(manual.worker.prepare(request(Kind.WEB_RULE, 0, SOURCE, "manual", false, true),
+                Arrays.asList(rule("*", TARGET, "manual", "none"), rule("*", OTHER, "online", "none"))));
+        assertEquals(Outcome.PASSTHROUGH, manual.worker.execute(request(Kind.WEB_RULE, 0,
+                SOURCE, "manual", false, true), Arrays.asList(rule("*", TARGET, "manual", "none"),
+                rule("*", OTHER, "online", "none"))).outcome);
+        assertEquals(Arrays.asList("0:" + TARGET, "0:" + TARGET), manual.packages.reads);
+        assertTrue(manual.packages.thaws.isEmpty());
+        assertTrue(manual.progress.isEmpty());
     }
 
     @Test public void enabledTargetNeedsNoThawCapabilityAndUsesMatchingSourceConversion() {
@@ -137,9 +192,9 @@ public class AutonomousBridgeCoordinatorTest {
         f.packages.unhide = false;
         List<LinkRuleEntry> rules = Collections.singletonList(
                 rule(SOURCE, TARGET, "manual", "fixed_deep_link"));
-        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
-                SOURCE, "enabled-conversion", true, true);
-        assertTrue(request.onlyFrozen); // An old persisted preference must not suppress the rule.
+        AutonomousBridgeCoordinator.Request<Object> request = new AutonomousBridgeCoordinator.Request<>(
+                Kind.WEB_RULE, 0, SOURCE, "example.com", null, "enabled-conversion", new Object(), true, true, false);
+        assertFalse(request.onlyFrozen);
         assertNotNull(f.worker.prepare(request, rules));
         assertEquals(Outcome.ROUTED, f.worker.execute(request, rules).outcome);
         assertSame(request, f.launcher.launched);
@@ -152,8 +207,9 @@ public class AutonomousBridgeCoordinatorTest {
     @Test public void externalThawAfterPreflightDoesNotReturnOwnedClickToOriginalBrowser() {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, FROZEN);
-        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
-                SOURCE, "external-thaw", true, true);
+        // The native worker clears onlyFrozen after it has safely claimed a frozen click.
+        AutonomousBridgeCoordinator.Request<Object> request = new AutonomousBridgeCoordinator.Request<>(
+                Kind.WEB_RULE, 0, SOURCE, "example.com", null, "external-thaw", new Object(), true, true, false);
         assertNotNull(f.worker.prepare(request, rules()));
         f.packages.put(0, TARGET, READY);
         assertEquals(Outcome.ROUTED, f.worker.execute(request, rules()).outcome);
@@ -166,8 +222,8 @@ public class AutonomousBridgeCoordinatorTest {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, READY);
         f.launcher.failLaunch = true;
-        AutonomousBridgeCoordinator.Request<Object> request = request(Kind.WEB_RULE, 0,
-                SOURCE, "enabled-failure", true, true);
+        AutonomousBridgeCoordinator.Request<Object> request = new AutonomousBridgeCoordinator.Request<>(
+                Kind.WEB_RULE, 0, SOURCE, "example.com", null, "enabled-failure", new Object(), true, true, false);
         AutonomousBridgeCoordinator.Result result = f.worker.execute(request, rules());
         assertEquals(Outcome.PASSTHROUGH, result.outcome);
         assertTrue(result.originalReplayed);
@@ -257,8 +313,8 @@ public class AutonomousBridgeCoordinatorTest {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, FROZEN);
         f.packages.put(0, OTHER, READY);
-        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(request(Kind.WEB_RULE, 0, SOURCE,
-                "a", false, true), Arrays.asList(rule("*", OTHER, "online", "none"),
+        assertEquals(Outcome.PASSTHROUGH, f.worker.execute(new AutonomousBridgeCoordinator.Request<>(
+                Kind.WEB_RULE, 0, SOURCE, "example.com", null, "a", new Object(), false, true, false), Arrays.asList(rule("*", OTHER, "online", "none"),
                 rule("*", TARGET, "online", "none"))).outcome);
         assertNull(f.launcher.target);
         assertTrue(f.packages.thaws.isEmpty());
@@ -268,8 +324,8 @@ public class AutonomousBridgeCoordinatorTest {
         Fixture f = new Fixture();
         f.packages.put(0, TARGET, READY);
         f.packages.put(0, OTHER, FROZEN);
-        assertEquals(Outcome.ROUTED, f.worker.execute(request(Kind.WEB_RULE, 0,
-                SOURCE, "a", false, true), Arrays.asList(rule("*", OTHER, "online", "none"),
+        assertEquals(Outcome.ROUTED, f.worker.execute(new AutonomousBridgeCoordinator.Request<>(
+                Kind.WEB_RULE, 0, SOURCE, "example.com", null, "a", new Object(), false, true, false), Arrays.asList(rule("*", OTHER, "online", "none"),
                 rule("*", TARGET, "manual", "none"))).outcome);
         assertEquals(Collections.singletonList("0:" + TARGET), f.packages.reads);
         assertEquals(TARGET, f.launcher.target);

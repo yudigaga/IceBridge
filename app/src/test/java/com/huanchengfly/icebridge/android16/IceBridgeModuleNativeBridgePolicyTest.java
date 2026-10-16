@@ -32,13 +32,18 @@ public class IceBridgeModuleNativeBridgePolicyTest {
     }
 
     @Test
-    public void matchedWebRuleUsesModuleForEnabledOrFrozenTarget() {
-        assertFalse(NativeBridgePolicy.shouldBypass(false, true, Collections.singleton(FROZEN), ENABLED));
-        assertFalse(NativeBridgePolicy.shouldBypass(false, true, Collections.singleton(FROZEN), FROZEN));
-        assertFalse(NativeBridgePolicy.shouldBypass(false, true, Collections.emptySet(), ENABLED));
+    public void matchedWebRuleUsesEnabledTargetOnlyWhenUnifiedRoutingIsEnabled() {
+        assertTrue(NativeBridgePolicy.shouldBypass(false, true, true, Collections.singleton(FROZEN), ENABLED));
+        assertTrue(NativeBridgePolicy.shouldBypass(false, true, true, Collections.emptySet(), ENABLED));
+        assertFalse(NativeBridgePolicy.shouldBypass(false, true, true, Collections.singleton(FROZEN), FROZEN));
+        assertFalse(NativeBridgePolicy.shouldBypass(false, true, false, Collections.singleton(FROZEN), ENABLED));
+        assertFalse(NativeBridgePolicy.shouldBypass(false, true, false, Collections.singleton(FROZEN), FROZEN));
+        assertFalse(NativeBridgePolicy.shouldBypass(false, true, false, Collections.emptySet(), ENABLED));
         // No matched target and ordinary direct schemes retain their original-call safeguards.
-        assertTrue(NativeBridgePolicy.shouldBypass(false, true, Collections.emptySet(), null));
-        assertTrue(NativeBridgePolicy.shouldBypass(false, false, Collections.emptySet(), ENABLED));
+        assertTrue(NativeBridgePolicy.shouldBypass(false, true, false, Collections.emptySet(), null));
+        assertTrue(NativeBridgePolicy.shouldBypass(false, false, false, Collections.emptySet(), ENABLED));
+        assertTrue("The compatibility overload must keep its frozen-only safeguard",
+                NativeBridgePolicy.shouldBypass(false, true, Collections.emptySet(), ENABLED));
     }
 
     @Test

@@ -91,6 +91,7 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
     var autonomous by remember { mutableStateOf(p.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false)) }
     var transitCard by remember { mutableStateOf(p.getBoolean(SystemServerConfigContract.KEY_TRANSIT_CARD_ENABLED, false)) }
     var smallWindow by remember { mutableStateOf(p.getBoolean(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW, false)) }
+    var ruleUnifiedOpen by remember { mutableStateOf(p.getBoolean(SystemServerConfigContract.KEY_RULE_UNIFIED_OPEN, true)) }
     var smallWindowPackages by remember { mutableStateOf(p.getStringSet(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, emptySet()).orEmpty().toSet()) }
     var showSmallWindowApps by remember { mutableStateOf(false) }
     val runtimeStatus = remember { a.getSharedPreferences(SystemServerConfigContract.RUNTIME_STATUS_PREFS, Context.MODE_PRIVATE) }
@@ -100,6 +101,7 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
             autonomous = p.getBoolean(SystemServerConfigContract.KEY_AUTONOMOUS_RUNTIME, false)
             transitCard = p.getBoolean(SystemServerConfigContract.KEY_TRANSIT_CARD_ENABLED, false)
             smallWindow = p.getBoolean(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW, false)
+            ruleUnifiedOpen = p.getBoolean(SystemServerConfigContract.KEY_RULE_UNIFIED_OPEN, true)
             smallWindowPackages = p.getStringSet(SystemServerConfigContract.KEY_SMALL_WINDOW_PACKAGES, emptySet()).orEmpty().toSet()
             statusRevision++
         }
@@ -179,7 +181,8 @@ private fun isConfigEnabled(k: String, f: Boolean): Boolean { val c = LitePal.wh
                 onCheckedChange={ smallWindow=it; setv(SystemServerConfigContract.KEY_OPEN_LINKS_IN_SMALL_WINDOW,it) })
             SuperArrow(title="小窗应用", summary=if(smallWindowPackages.isEmpty()) "未选择应用时不使用小窗" else "已选择 ${smallWindowPackages.size} 个应用", onClick={ showSmallWindowApps=true })
             SuperArrow(title="小窗尺寸与位置", summary="调整宽高和位置，实时预览小窗与中转卡片", onClick={ a.startActivity(Intent(a, SmallWindowSettingsActivity::class.java)) })
-            InfoRow("规则内统一打开", "命中规则的普通链接始终由模块打开目标；冻结时先解冻，已解冻时直接打开。")
+            SuperSwitch(title="规则内统一打开", summary="开启后，规则命中的目标无论是否冻结都由模块打开；关闭时仅接管被冻结的目标", checked=ruleUnifiedOpen,
+                onCheckedChange={ ruleUnifiedOpen=it; setv(SystemServerConfigContract.KEY_RULE_UNIFIED_OPEN,it) })
             SuperSwitch(title="不在最近任务中显示 IceBridge", summary="隐藏临时桥接页与 IceBridge 任务", checked=recents, onCheckedChange={ recents=it; a.setPref(KEY_HIDE_RECENTS,it); RecentTaskVisibility.apply(a,it) })
             SuperSwitch(title="跳转失败时回退浏览器", summary="目标应用无法打开时继续打开原网页", checked=fallback, onCheckedChange={ fallback=it; setv(KEY_BROWSER_FALLBACK,it) })
         }

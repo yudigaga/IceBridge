@@ -9,6 +9,86 @@ public class TransitSessionPolicyTest {
     private static final String TARGET = "com.example.target";
     private final TransitSessionPolicy policy = new TransitSessionPolicy();
 
+    @Test public void actualTaskAnchorFollowsMoveAndResizeWithoutExtendingLifetime() {
+        assertTrue(policy.stage(1, 0, "com.example.source", TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "light", SmallWindowLayout.DEFAULT, 100));
+        TransitTaskBounds first = bounds(1, 11, 7, 0, TARGET, 120, 40, 80, 440, 680);
+        assertTrue(policy.targetBounds(1, first));
+        TransitTaskBounds moved = bounds(1, 11, 7, 0, TARGET, 140, 200, 300, 500, 700);
+        assertTrue(policy.targetBounds(1, moved));
+        assertSame(moved, policy.active().taskBounds);
+        assertTrue(policy.submitted(1));
+        assertTrue(policy.stage(1, 0, null, TARGET, TransitSessionPolicy.OPENING,
+                0xff2979ff, "dark", SmallWindowLayout.DEFAULT, 150));
+        assertSame(moved, policy.active().taskBounds);
+        assertEquals(12100, policy.active().deadline);
+        assertTrue(policy.targetDrawn(1, 0, TARGET));
+        assertFalse(policy.targetBounds(1, moved));
+        assertNull(policy.active());
+    }
+
+    @Test public void unrelatedOldAndReusedTaskEventsCannotMoveCurrentCard() {
+        assertTrue(policy.stage(2, 0, null, TARGET, TransitSessionPolicy.OPENING,
+                0, "light", SmallWindowLayout.DEFAULT, 100));
+        TransitTaskBounds bound = bounds(2, 11, 7, 0, TARGET, 120, 0, 0, 400, 600);
+        assertTrue(policy.targetBounds(2, bound));
+        assertFalse(policy.targetBounds(1, bounds(1, 11, 7, 0, TARGET, 140, 1, 1, 500, 800)));
+        assertFalse(policy.targetBounds(2, bounds(1, 11, 7, 0, TARGET, 140, 1, 1, 500, 800)));
+        assertFalse(policy.targetBounds(2, bounds(2, 11, 7, 10, TARGET, 140, 1, 1, 500, 800)));
+        assertFalse(policy.targetBounds(2, bounds(2, 11, 7, 0, "com.example.other", 140, 1, 1, 500, 800)));
+        assertFalse(policy.targetBounds(2, bounds(2, 11, 8, 0, TARGET, 140, 1, 1, 500, 800)));
+        assertFalse(policy.targetBounds(2, bounds(2, 12, 7, 0, TARGET, 140, 1, 1, 500, 800)));
+        assertFalse(policy.targetBounds(2, bounds(2, 11, 7, 0, TARGET, 110, 1, 1, 500, 800)));
+        assertSame(bound, policy.active().taskBounds);
+        TransitTaskBounds untaggedMove = bounds(0, 11, 7, 0, TARGET, 150, 100, 100, 500, 700);
+        assertTrue(policy.targetBounds(2, untaggedMove));
+        assertSame(untaggedMove, policy.active().taskBounds);
+    }
+
+    @Test public void uniqueVisibleQueryIsProvisionalUntilExactLaunchTokenIdentifiesTheTask() {
+        assertTrue(policy.stage(1, 0, null, TARGET, TransitSessionPolicy.THAWING,
+                0, "light", SmallWindowLayout.DEFAULT, 100));
+        assertFalse(policy.targetBounds(1, bounds(0, 0, 7, 0, TARGET, 120, 0, 0, 400, 600)));
+        assertTrue(policy.stage(1, 0, null, TARGET, TransitSessionPolicy.OPENING,
+                0, "light", SmallWindowLayout.DEFAULT, 130));
+        assertFalse(policy.targetBounds(1, bounds(0, 11, 7, 0, TARGET, 140, 0, 0, 400, 600)));
+        assertTrue(policy.targetBounds(1, bounds(0, 0, 7, 0, TARGET, 140, 0, 0, 400, 600)));
+        assertFalse(policy.active().confirmedByTransitToken);
+        assertTrue(policy.targetBounds(1, bounds(0, 11, 7, 0, TARGET, 145, 20, 20, 420, 620)));
+        assertFalse("An untagged move must not confirm the provisional task", policy.active().confirmedByTransitToken);
+        assertTrue(policy.submitted(1));
+        assertTrue(policy.stage(1, 0, null, TARGET, TransitSessionPolicy.OPENING,
+                0, "dark", SmallWindowLayout.DEFAULT, 146));
+        assertFalse(policy.active().confirmedByTransitToken);
+        assertFalse(policy.targetBounds(1, bounds(0, 12, 8, 0, TARGET, 150, 0, 0, 400, 600)));
+        assertTrue(policy.targetBounds(1, bounds(1, 12, 8, 0, TARGET, 150, 50, 50, 300, 400)));
+        assertEquals(8, policy.active().taskBounds.taskId);
+        assertTrue(policy.active().confirmedByTransitToken);
+        assertTrue(policy.targetBounds(1, bounds(0, 12, 8, 0, TARGET, 155, 70, 70, 320, 420)));
+        assertTrue("Untagged updates must preserve confirmed binding", policy.active().confirmedByTransitToken);
+        assertFalse(policy.targetBounds(1, bounds(0, 11, 7, 0, TARGET, 160, 0, 0, 400, 600)));
+        assertFalse(policy.targetBounds(1, bounds(1, 11, 7, 0, TARGET, 160, 0, 0, 400, 600)));
+    }
+
+    @Test public void fullscreenOtherDisplayAndInvalidBoundsCannotAcquireAWindowAnchor() {
+        begin(1, TransitSessionPolicy.OPENING, 100);
+        assertFalse(policy.targetBounds(1, bounds(1, 11, 7, 0, TARGET, 120, 0, 0, 400, 600)));
+        assertTrue(policy.stage(2, 0, null, TARGET, TransitSessionPolicy.OPENING,
+                0, "light", SmallWindowLayout.DEFAULT, 100));
+        assertFalse(policy.targetBounds(2, new TransitTaskBounds(2, 11, 7, 0, TARGET,
+                0, 1, 0, 0, 400, 600, 120)));
+        assertFalse(policy.targetBounds(2, new TransitTaskBounds(2, 11, 7, 0, TARGET,
+                1, 5, 0, 0, 400, 600, 120)));
+        assertFalse(policy.targetBounds(2, bounds(2, 11, 7, 0, TARGET, 120, 20, 20, 10, 10)));
+        assertNull(policy.active().taskBounds);
+    }
+
+    private static TransitTaskBounds bounds(long transit, long instance, int task, int user, String pkg,
+                                             long at, int left, int top, int right, int bottom) {
+        return new TransitTaskBounds(transit, instance, task, user, pkg, 0, 5,
+                left, top, right, bottom, at);
+    }
+
     @Test public void smallWindowPlacementStaysBoundAcrossStageAndSubmission() {
         SmallWindowLayout selected = new SmallWindowLayout(60, 40, 100, 0);
         assertTrue(policy.stage(1, 0, "com.example.source", TARGET, TransitSessionPolicy.THAWING,

@@ -55,6 +55,18 @@ public final class SystemTargetWindowObserver {
         delivered.put(record, new Delivery(id, SystemClock.elapsedRealtime()));
     }
 
+    /** The task observer shares the delivery override for reused Activities. */
+    public synchronized long transitId(Object record) {
+        try {
+            if (record == null) return 0;
+            prune();
+            Delivery delivery = delivered.get(record);
+            if (delivery != null) return delivery.id;
+            Object raw = field(record, "intent");
+            return idOf(raw instanceof Intent ? (Intent) raw : null);
+        } catch (Throwable ignored) { return 0; }
+    }
+
     /** Called after onWindowsDrawn, or after resume/delivery only for already visible drawn windows. */
     public synchronized Event read(Object record, boolean requireVisible) {
         try {

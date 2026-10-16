@@ -10,6 +10,52 @@ import static org.junit.Assert.*;
 public class SystemTransitPresenterTest {
     private static final String TARGET = "com.example.target";
 
+    @Test public void exactLaunchMayReplaceAQueriedTaskAfterItsUntaggedMove() {
+        Fixture fixture = new Fixture();
+        fixture.presenter.onStage(1, 0, null, TARGET, SystemTransitPresenter.Stage.OPENING,
+                0xff7e57c2, "light", SmallWindowLayout.DEFAULT);
+        fixture.ui.runReady();
+        fixture.presenter.updateTargetBounds(1, new TransitTaskBounds(0, 0, 7, 0, TARGET,
+                0, 5, 0, 0, 400, 600, 10));
+        fixture.presenter.updateTargetBounds(1, new TransitTaskBounds(0, 11, 7, 0, TARGET,
+                0, 5, 20, 20, 420, 620, 20));
+        TransitTaskBounds actual = new TransitTaskBounds(1, 12, 8, 0, TARGET,
+                0, 5, 100, 200, 500, 800, 30);
+        fixture.presenter.updateTargetBounds(1, actual);
+        fixture.presenter.updateTargetBounds(1, new TransitTaskBounds(0, 11, 7, 0, TARGET,
+                0, 5, 40, 40, 440, 640, 40));
+        fixture.ui.runReady();
+        assertSame(actual, fixture.host.session.taskBounds);
+        assertTrue(fixture.host.session.confirmedByTransitToken);
+    }
+
+    @Test public void taskMovesAndResizesRelayoutOnlyTheCurrentCardAndNeverResurrectIt() {
+        Fixture fixture = new Fixture();
+        fixture.presenter.onStage(1, 0, null, TARGET, SystemTransitPresenter.Stage.OPENING,
+                0xff7e57c2, "light", SmallWindowLayout.DEFAULT);
+        fixture.ui.runReady();
+        TransitTaskBounds moved = new TransitTaskBounds(1, 11, 7, 0, TARGET, 0, 5,
+                100, 200, 500, 800, 10);
+        fixture.presenter.updateTargetBounds(1, moved);
+        fixture.ui.runReady();
+        assertSame(moved, fixture.host.session.taskBounds);
+        int shows = fixture.host.shows;
+        fixture.presenter.updateTargetBounds(1, new TransitTaskBounds(1, 12, 8, 0, TARGET,
+                0, 5, 0, 0, 400, 600, 20));
+        fixture.ui.runReady();
+        assertEquals(shows, fixture.host.shows);
+        fixture.presenter.onTargetDrawn(1, 0, TARGET);
+        fixture.presenter.updateTargetBounds(1, moved);
+        fixture.ui.runReady();
+        assertNull(fixture.host.session);
+        assertEquals(shows, fixture.host.shows);
+        fixture.stage(2, SystemTransitPresenter.Stage.OPENING);
+        fixture.presenter.updateTargetBounds(1, moved);
+        fixture.ui.runReady();
+        assertEquals(2, fixture.host.session.id);
+        assertNull(fixture.host.session.taskBounds);
+    }
+
     @Test public void intendedSmallWindowBoundsTravelWithCardUntilTargetAppears() {
         Fixture fixture = new Fixture();
         SmallWindowLayout placement = new SmallWindowLayout(55, 40, 100, 0);

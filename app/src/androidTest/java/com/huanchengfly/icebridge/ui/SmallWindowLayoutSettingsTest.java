@@ -5,15 +5,21 @@ import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.os.Bundle;
+import android.graphics.Rect;
+import android.graphics.drawable.ColorDrawable;
 import android.os.SystemClock;
-import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.huanchengfly.icebridge.SystemServerConfigContract;
-import com.huanchengfly.icebridge.activities.SmallWindowSettingsActivity;
+import com.huanchengfly.icebridge.activities.SmallWindowFrameEditorActivity;
+import com.huanchengfly.icebridge.activities.SmallWindowFrameEditorView;
+import com.huanchengfly.icebridge.android16.SystemWindowLayout;
 import com.huanchengfly.icebridge.automation.SmallWindowLayout;
 
 import org.junit.Test;
@@ -22,249 +28,235 @@ import org.junit.runner.RunWith;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 
 import static org.junit.Assert.*;
 
-/** Verifies draft geometry, the visible preview and the durable system-confirmation boundary. */
+/** Actual display geometry and gesture/save lifecycle without an exported endpoint. */
 @RunWith(AndroidJUnit4.class)
 public class SmallWindowLayoutSettingsTest {
     private static final String KEY = SystemServerConfigContract.KEY_SMALL_WINDOW_LAYOUT;
 
-    @Test public void previewTracksAllAdjustmentsAndRecreationWithoutApplyingUntilSaved() {
-        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
-        Context context = instrumentation.getTargetContext();
-        SharedPreferences preferences = context.getSharedPreferences("preferences", Context.MODE_PRIVATE);
-        SharedPreferences status = context.getSharedPreferences(
-                SystemServerConfigContract.RUNTIME_STATUS_PREFS, Context.MODE_PRIVATE);
-        Object original = preferences.getAll().get(KEY);
-        Map<String, ?> originalStatus = new HashMap<>(status.getAll());
-        Activity activity = null;
+    @Test public void transparentEditorUsesActualDisplayAndCentersTheCompactCard() {
+        Fixture fixture = new Fixture();
         try {
-            assertTrue(preferences.edit().remove(KEY).commit());
-            activity = open(instrumentation);
-            seedConfirmation(status);
-            assertPreview(instrumentation, SmallWindowLayout.DEFAULT);
-            assertFalse("Opening a preview must not write a new preference", preferences.contains(KEY));
-
-            setProgress(instrumentation, "小窗宽度", 85);
-            setProgress(instrumentation, "小窗高度", 45);
-            setProgress(instrumentation, "水平位置", 15);
-            setProgress(instrumentation, "垂直位置", 80);
-            SmallWindowLayout requested = new SmallWindowLayout(85, 45, 15, 80);
-            assertPreviewAlreadyVisible(instrumentation);
-            assertPreview(instrumentation, requested);
-            assertFalse("Preview adjustments must remain a draft", preferences.contains(KEY));
-            assertTrue("An unsaved draft must keep the acknowledged runtime settings valid",
-                    status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false));
-
-            activity = recreate(instrumentation, activity);
-            assertPreview(instrumentation, requested);
-            assertFalse("Recreation must retain the draft without saving it", preferences.contains(KEY));
-            clickText(instrumentation, "保存设置");
-            assertEquals(requested.encode(), preferences.getString(KEY, null));
-            assertConfirmationRevoked(status);
-
-            activity = recreate(instrumentation, activity);
-            assertPreview(instrumentation, requested);
-            assertEquals(requested.encode(), preferences.getString(KEY, null));
-            seedConfirmation(status);
-            clickText(instrumentation, "恢复默认");
-            assertPreview(instrumentation, SmallWindowLayout.DEFAULT);
-            assertEquals("Reset also remains a draft until Save", requested.encode(), preferences.getString(KEY, null));
-            assertTrue(status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false));
-            clickText(instrumentation, "保存设置");
-            assertEquals(SmallWindowLayout.DEFAULT.encode(), preferences.getString(KEY, null));
-            assertConfirmationRevoked(status);
-        } finally {
-            finish(instrumentation, activity);
-            restorePreference(preferences, original);
-            instrumentation.waitForIdleSync();
-            restorePreferences(status, originalStatus);
-        }
+            SmallWindowLayout saved = new SmallWindowLayout(55, 40, 0, 100);
+            assertTrue(fixture.preferences.edit().putString(KEY, saved.encode()).commit());
+            fixture.open();
+            fixture.instrumentation.runOnMainSync(() -> {
+                SmallWindowFrameEditorView frame = fixture.activity.getFrameEditor();
+                Rect available = SystemWindowLayout.availableBounds(fixture.activity);
+                assertEquals(available, frame.getAvailableBoundsOnScreen());
+                assertTrue("Edit surface must span the real display, not a thumbnail", frame.getWidth() >= available.width());
+                assertTrue(frame.getHeight() >= available.height());
+                assertEquals(saved, frame.getDraft());
+                assertFrameMatchesDraft(frame);
+                assertCardCentered(frame);
+                assertEquals("Editor must expose the real screen underneath", 0,
+                        ((ColorDrawable) fixture.activity.getWindow().getDecorView().getBackground()).getAlpha());
+            });
+        } finally { fixture.close(); }
     }
 
-    @Test public void leavingAnUnsavedPreviewKeepsThePreviouslySavedWindow() {
-        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
-        Context context = instrumentation.getTargetContext();
-        SharedPreferences preferences = context.getSharedPreferences("preferences", Context.MODE_PRIVATE);
-        SharedPreferences status = context.getSharedPreferences(
-                SystemServerConfigContract.RUNTIME_STATUS_PREFS, Context.MODE_PRIVATE);
-        Object original = preferences.getAll().get(KEY);
-        Map<String, ?> originalStatus = new HashMap<>(status.getAll());
-        SmallWindowLayout saved = new SmallWindowLayout(55, 40, 0, 100);
-        Activity activity = null;
+    @Test public void draggingAndResizingTheFrameMovesItsCardWithoutSaving() {
+        Fixture fixture = new Fixture();
         try {
-            assertTrue(preferences.edit().putString(KEY, saved.encode()).commit());
-            activity = open(instrumentation);
-            seedConfirmation(status);
-            setProgress(instrumentation, "小窗宽度", 95);
-            assertPreview(instrumentation, new SmallWindowLayout(95, 40, 0, 100));
-            finish(instrumentation, activity);
-            activity = null;
-            assertEquals(saved.encode(), preferences.getString(KEY, null));
-            assertTrue(status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false));
-            activity = open(instrumentation);
-            assertPreview(instrumentation, saved);
-        } finally {
-            finish(instrumentation, activity);
-            restorePreference(preferences, original);
-            instrumentation.waitForIdleSync();
-            restorePreferences(status, originalStatus);
-        }
+            fixture.clearAndOpen();
+            seedConfirmation(fixture.status);
+            fixture.instrumentation.runOnMainSync(() -> {
+                SmallWindowFrameEditorView frame = fixture.activity.getFrameEditor();
+                Rect before = frame.getFrameBoundsOnScreen(), area = frame.getAvailableBoundsOnScreen();
+                drag(frame, before.centerX(), before.centerY(), before.centerX() - area.width() * .12f,
+                        before.centerY() - area.height() * .10f);
+                assertTrue(frame.getDraft().horizontalPercent < SmallWindowLayout.DEFAULT.horizontalPercent);
+                assertTrue(frame.getDraft().verticalPercent < SmallWindowLayout.DEFAULT.verticalPercent);
+                assertFrameMatchesDraft(frame);
+                assertCardCentered(frame);
+                Rect moved = frame.getFrameBoundsOnScreen();
+                drag(frame, moved.right, moved.bottom, moved.right - area.width() * .10f,
+                        moved.bottom - area.height() * .10f);
+                assertTrue(frame.getDraft().widthPercent < SmallWindowLayout.DEFAULT.widthPercent);
+                assertTrue(frame.getDraft().heightPercent < SmallWindowLayout.DEFAULT.heightPercent);
+                assertFrameMatchesDraft(frame);
+                assertCardCentered(frame);
+            });
+            assertFalse("Gestures remain a draft until Save", fixture.preferences.contains(KEY));
+            assertTrue("Draft changes must not revoke runtime confirmation",
+                    fixture.status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false));
+        } finally { fixture.close(); }
     }
 
-    @Test public void malformedSavedLayoutCanBeRepairedWithoutMakingAnotherAdjustment() {
-        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
-        Context context = instrumentation.getTargetContext();
-        SharedPreferences preferences = context.getSharedPreferences("preferences", Context.MODE_PRIVATE);
-        SharedPreferences status = context.getSharedPreferences(
-                SystemServerConfigContract.RUNTIME_STATUS_PREFS, Context.MODE_PRIVATE);
-        Object original = preferences.getAll().get(KEY);
-        Map<String, ?> originalStatus = new HashMap<>(status.getAll());
-        String malformed = "70,60,not-a-position,50";
-        Activity activity = null;
+    @Test public void extremeGesturesStayInsideDisplayAndRespectSizeLimits() {
+        Fixture fixture = new Fixture();
         try {
-            assertTrue(preferences.edit().putString(KEY, malformed).commit());
-            activity = open(instrumentation);
-            assertPreview(instrumentation, SmallWindowLayout.DEFAULT);
-            assertEquals("Opening the editor must not silently overwrite the malformed preference",
-                    malformed, preferences.getString(KEY, null));
-            seedConfirmation(status);
-            clickText(instrumentation, "保存设置");
-            assertEquals("Save must repair the malformed preference even when the preview is unchanged",
-                    SmallWindowLayout.DEFAULT.encode(), preferences.getString(KEY, null));
-            assertConfirmationRevoked(status);
-            activity = recreate(instrumentation, activity);
-            assertPreview(instrumentation, SmallWindowLayout.DEFAULT);
-        } finally {
-            finish(instrumentation, activity);
-            restorePreference(preferences, original);
-            instrumentation.waitForIdleSync();
-            restorePreferences(status, originalStatus);
-        }
+            fixture.clearAndOpen();
+            fixture.instrumentation.runOnMainSync(() -> {
+                SmallWindowFrameEditorView frame = fixture.activity.getFrameEditor();
+                Rect bounds = frame.getFrameBoundsOnScreen();
+                drag(frame, bounds.right, bounds.bottom, bounds.left - 10_000, bounds.top - 10_000);
+                assertEquals(30, frame.getDraft().widthPercent);
+                assertEquals(25, frame.getDraft().heightPercent);
+                assertFrameMatchesDraft(frame);
+                assertCardCentered(frame);
+                bounds = frame.getFrameBoundsOnScreen();
+                drag(frame, bounds.centerX(), bounds.centerY(), -10_000, -10_000);
+                assertEquals(0, frame.getDraft().horizontalPercent);
+                assertEquals(0, frame.getDraft().verticalPercent);
+                bounds = frame.getFrameBoundsOnScreen();
+                drag(frame, bounds.right, bounds.bottom, 10_000, 10_000);
+                assertEquals(95, frame.getDraft().widthPercent);
+                assertEquals(95, frame.getDraft().heightPercent);
+                assertTrue(frame.getAvailableBoundsOnScreen().contains(frame.getFrameBoundsOnScreen()));
+                assertCardCentered(frame);
+            });
+        } finally { fixture.close(); }
     }
 
-    private static Activity open(Instrumentation instrumentation) {
-        Activity activity = instrumentation.startActivitySync(new Intent(instrumentation.getTargetContext(),
-                SmallWindowSettingsActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
-        instrumentation.waitForIdleSync();
-        return activity;
-    }
-
-    private static Activity recreate(Instrumentation instrumentation, Activity previous) {
-        Instrumentation.ActivityMonitor monitor = instrumentation.addMonitor(
-                SmallWindowSettingsActivity.class.getName(), null, false);
+    @Test public void savePersistsExactPreviewRevokesConfirmationAndHidesEditor() {
+        Fixture fixture = new Fixture();
         try {
-            instrumentation.runOnMainSync(previous::recreate);
-            Activity activity = monitor.waitForActivityWithTimeout(10_000L);
-            assertNotNull("The layout editor must recreate", activity);
-            instrumentation.waitForIdleSync();
-            return activity;
-        } finally { instrumentation.removeMonitor(monitor); }
+            fixture.clearAndOpen();
+            seedConfirmation(fixture.status);
+            SmallWindowLayout[] requested = new SmallWindowLayout[1];
+            fixture.instrumentation.runOnMainSync(() -> {
+                SmallWindowFrameEditorView frame = fixture.activity.getFrameEditor();
+                Rect bounds = frame.getFrameBoundsOnScreen();
+                drag(frame, bounds.centerX(), bounds.centerY(), bounds.centerX() + bounds.width() * .10f,
+                        bounds.centerY() - bounds.height() * .12f);
+                requested[0] = frame.getDraft();
+                assertFrameMatchesDraft(frame);
+                click(fixture.activity, "保存");
+            });
+            fixture.instrumentation.waitForIdleSync();
+            assertEquals(requested[0].encode(), fixture.preferences.getString(KEY, null));
+            assertFalse(fixture.status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, true));
+            assertFalse(fixture.status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, true));
+            assertEquals("", fixture.status.getString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, null));
+            assertTrue("Save removes the editor so its frame disappears", fixture.activity.isFinishing());
+            fixture.open();
+            fixture.instrumentation.runOnMainSync(() -> {
+                assertEquals(requested[0], fixture.activity.getFrameEditor().getDraft());
+                assertFrameMatchesDraft(fixture.activity.getFrameEditor());
+            });
+        } finally { fixture.close(); }
     }
 
-    private static void finish(Instrumentation instrumentation, Activity activity) {
-        if (activity == null) return;
-        instrumentation.runOnMainSync(activity::finish);
-        instrumentation.waitForIdleSync();
-    }
-
-    private static void setProgress(Instrumentation instrumentation, String label, int value) {
-        AccessibilityNodeInfo slider = findVisible(instrumentation,
-                node -> label.contentEquals(node.getContentDescription() == null ? "" : node.getContentDescription())
-                        && node.getRangeInfo() != null, true);
+    @Test public void cancelAndBackKeepPreviousLayoutAndConfirmation() {
+        Fixture fixture = new Fixture();
         try {
-            Bundle arguments = new Bundle();
-            arguments.putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, value);
-            assertTrue("The slider must accept an adjustment: " + label,
-                    slider.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId(), arguments));
-        } finally { slider.recycle(); }
-        instrumentation.waitForIdleSync();
+            SmallWindowLayout saved = new SmallWindowLayout(55, 40, 0, 100);
+            assertTrue(fixture.preferences.edit().putString(KEY, saved.encode()).commit());
+            fixture.open();
+            seedConfirmation(fixture.status);
+            fixture.instrumentation.runOnMainSync(() -> {
+                fixture.activity.getFrameEditor().resetDraft();
+                click(fixture.activity, "取消");
+            });
+            fixture.instrumentation.waitForIdleSync();
+            assertTrue(fixture.activity.isFinishing());
+            assertEquals(saved.encode(), fixture.preferences.getString(KEY, null));
+            fixture.open();
+            fixture.instrumentation.runOnMainSync(() -> {
+                assertEquals(saved, fixture.activity.getFrameEditor().getDraft());
+                fixture.activity.getFrameEditor().resetDraft();
+                fixture.activity.onBackPressed();
+            });
+            fixture.instrumentation.waitForIdleSync();
+            assertTrue(fixture.activity.isFinishing());
+            assertEquals(saved.encode(), fixture.preferences.getString(KEY, null));
+            assertTrue(fixture.status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, false));
+        } finally { fixture.close(); }
     }
 
-    private static void assertPreview(Instrumentation instrumentation, SmallWindowLayout layout) {
-        String expected = "宽度" + layout.widthPercent + "%，高度" + layout.heightPercent
-                + "%，水平" + layout.horizontalPercent + "%，垂直" + layout.verticalPercent + "%";
-        AccessibilityNodeInfo preview = findVisible(instrumentation,
-                node -> "小窗布局预览".contentEquals(node.getContentDescription() == null ? "" : node.getContentDescription())
-                        && expected.contentEquals(node.getStateDescription() == null ? "" : node.getStateDescription()), false);
-        try { assertEquals(expected, String.valueOf(preview.getStateDescription())); }
-        finally { preview.recycle(); }
-    }
-
-    /** Deliberately does not scroll: the preview must stay visible beside the last adjustment. */
-    private static void assertPreviewAlreadyVisible(Instrumentation instrumentation) {
-        AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
-        assertNotNull("The layout editor must remain active", root);
+    @Test public void recreationRetainsUnsavedDraftAndResolvesCurrentDisplay() {
+        Fixture fixture = new Fixture();
         try {
-            AccessibilityNodeInfo preview = find(root, node -> node.isVisibleToUser()
-                    && "小窗布局预览".contentEquals(node.getContentDescription() == null ? "" : node.getContentDescription()));
-            assertNotNull("The preview must remain visible while adjusting the bottom slider", preview);
-            preview.recycle();
-        } finally { root.recycle(); }
+            fixture.clearAndOpen();
+            SmallWindowLayout[] draft = new SmallWindowLayout[1];
+            fixture.instrumentation.runOnMainSync(() -> {
+                SmallWindowFrameEditorView frame = fixture.activity.getFrameEditor();
+                Rect bounds = frame.getFrameBoundsOnScreen();
+                drag(frame, bounds.right, bounds.bottom, bounds.right - bounds.width() * .15f,
+                        bounds.bottom - bounds.height() * .15f);
+                draft[0] = frame.getDraft();
+            });
+            Instrumentation.ActivityMonitor monitor = fixture.instrumentation.addMonitor(
+                    SmallWindowFrameEditorActivity.class.getName(), null, false);
+            try {
+                fixture.instrumentation.runOnMainSync(fixture.activity::recreate);
+                Activity recreated = monitor.waitForActivityWithTimeout(10_000);
+                assertNotNull("Editor must recreate", recreated);
+                fixture.activity = (SmallWindowFrameEditorActivity) recreated;
+                fixture.awaitLayout();
+            } finally { fixture.instrumentation.removeMonitor(monitor); }
+            fixture.instrumentation.runOnMainSync(() -> {
+                assertEquals(draft[0], fixture.activity.getFrameEditor().getDraft());
+                assertFrameMatchesDraft(fixture.activity.getFrameEditor());
+                assertCardCentered(fixture.activity.getFrameEditor());
+            });
+            assertFalse(fixture.preferences.contains(KEY));
+        } finally { fixture.close(); }
     }
 
-    private static void clickText(Instrumentation instrumentation, String label) {
-        long deadline = SystemClock.uptimeMillis() + 5_000L;
-        boolean clicked = false;
-        do {
-            AccessibilityNodeInfo node = findVisible(instrumentation,
-                    item -> label.contentEquals(item.getText() == null ? "" : item.getText()), true);
-            while (node != null) {
-                AccessibilityNodeInfo parent = null;
-                try {
-                    // Compose can update enabled state without replacing the semantics node ID.
-                    // Read each ancestor again before deciding whether it can accept a click.
-                    if (node.refresh() && node.isClickable()) {
-                        clicked = node.isEnabled() && node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                        break;
-                    }
-                    parent = node.getParent();
-                } finally { node.recycle(); }
-                node = parent;
-            }
-            // A successful action must never be repeated; only rejected actions may be retried.
-            if (clicked) break;
-            instrumentation.waitForIdleSync();
-            SystemClock.sleep(50L);
-        } while (SystemClock.uptimeMillis() < deadline);
-        assertTrue("The layout control must accept a click: " + label, clicked);
-        instrumentation.waitForIdleSync();
+    @Test public void malformedLayoutIsRepairedOnlyOnExplicitSave() {
+        Fixture fixture = new Fixture();
+        try {
+            String malformed = "70,60,not-a-position,50";
+            assertTrue(fixture.preferences.edit().putString(KEY, malformed).commit());
+            fixture.open();
+            fixture.instrumentation.runOnMainSync(() ->
+                    assertEquals(SmallWindowLayout.DEFAULT, fixture.activity.getFrameEditor().getDraft()));
+            assertEquals(malformed, fixture.preferences.getString(KEY, null));
+            fixture.instrumentation.runOnMainSync(() -> click(fixture.activity, "保存"));
+            fixture.instrumentation.waitForIdleSync();
+            assertEquals(SmallWindowLayout.DEFAULT.encode(), fixture.preferences.getString(KEY, null));
+            assertTrue(fixture.activity.isFinishing());
+        } finally { fixture.close(); }
     }
 
-    private static AccessibilityNodeInfo findVisible(Instrumentation instrumentation,
-                                                      Predicate<AccessibilityNodeInfo> predicate, boolean forward) {
-        long deadline = SystemClock.uptimeMillis() + 10_000L;
-        do {
-            AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
-            if (root != null) {
-                try {
-                    AccessibilityNodeInfo result = find(root, node -> node.isVisibleToUser() && predicate.test(node));
-                    if (result != null) return result;
-                    AccessibilityNodeInfo scroll = find(root, AccessibilityNodeInfo::isScrollable);
-                    if (scroll != null) {
-                        try { scroll.performAction(forward ? AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-                                : AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD); }
-                        finally { scroll.recycle(); }
-                    }
-                } finally { root.recycle(); }
-            }
-            instrumentation.waitForIdleSync();
-            SystemClock.sleep(100L);
-        } while (SystemClock.uptimeMillis() < deadline);
-        throw new AssertionError("The layout control or expected preview did not become visible");
+    private static void assertFrameMatchesDraft(SmallWindowFrameEditorView frame) {
+        Rect area = frame.getAvailableBoundsOnScreen();
+        SmallWindowLayout.Bounds expected = frame.getDraft().resolve(area.left, area.top, area.width(), area.height());
+        assertEquals(new Rect(expected.left, expected.top, expected.right, expected.bottom), frame.getFrameBoundsOnScreen());
     }
 
-    private static AccessibilityNodeInfo find(AccessibilityNodeInfo node, Predicate<AccessibilityNodeInfo> predicate) {
-        if (predicate.test(node)) return AccessibilityNodeInfo.obtain(node);
-        for (int index = 0; index < node.getChildCount(); index++) {
-            AccessibilityNodeInfo child = node.getChild(index);
-            if (child != null) {
-                try {
-                    AccessibilityNodeInfo result = find(child, predicate);
-                    if (result != null) return result;
-                } finally { child.recycle(); }
+    private static void assertCardCentered(SmallWindowFrameEditorView frame) {
+        frame.layout(frame.getLeft(), frame.getTop(), frame.getRight(), frame.getBottom());
+        Rect bounds = frame.getFrameBoundsOnScreen(), card = frame.getCardBoundsOnScreen();
+        assertEquals(bounds.exactCenterX(), card.exactCenterX(), 1);
+        assertEquals(bounds.exactCenterY(), card.exactCenterY(), 1);
+        assertTrue(bounds.contains(card));
+    }
+
+    private static void drag(SmallWindowFrameEditorView frame, float fromX, float fromY, float toX, float toY) {
+        int[] origin = new int[2];
+        frame.getLocationOnScreen(origin);
+        long time = SystemClock.uptimeMillis();
+        dispatch(frame, time, time, MotionEvent.ACTION_DOWN, fromX - origin[0], fromY - origin[1]);
+        dispatch(frame, time, time + 100, MotionEvent.ACTION_MOVE, toX - origin[0], toY - origin[1]);
+        assertCardCentered(frame);
+        dispatch(frame, time, time + 200, MotionEvent.ACTION_UP, toX - origin[0], toY - origin[1]);
+        frame.layout(frame.getLeft(), frame.getTop(), frame.getRight(), frame.getBottom());
+    }
+
+    private static void dispatch(View view, long down, long now, int action, float x, float y) {
+        MotionEvent event = MotionEvent.obtain(down, now, action, x, y, 0);
+        try { assertTrue("Frame gesture must be accepted", view.dispatchTouchEvent(event)); }
+        finally { event.recycle(); }
+    }
+
+    private static void click(Activity activity, String label) {
+        View button = findButton(activity.getWindow().getDecorView(), label);
+        assertNotNull("Missing editor action: " + label, button);
+        assertTrue(button.performClick());
+    }
+
+    private static View findButton(View view, String text) {
+        if (view instanceof Button && text.contentEquals(((Button) view).getText())) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                View result = findButton(group.getChildAt(index), text);
+                if (result != null) return result;
             }
         }
         return null;
@@ -276,22 +268,51 @@ public class SmallWindowLayoutSettingsTest {
                 .putString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, "previous-layout-confirmation").commit());
     }
 
-    private static void assertConfirmationRevoked(SharedPreferences status) {
-        assertFalse(status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_READY, true));
-        assertFalse(status.getBoolean(SystemServerConfigContract.KEY_RUNTIME_PERSISTED_ACK, true));
-        assertEquals("", status.getString(SystemServerConfigContract.KEY_CONFIG_FINGERPRINT, null));
-    }
+    private static final class Fixture implements AutoCloseable {
+        final Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        final Context context = instrumentation.getTargetContext();
+        final SharedPreferences preferences = context.getSharedPreferences("preferences", Context.MODE_PRIVATE);
+        final SharedPreferences status = context.getSharedPreferences(SystemServerConfigContract.RUNTIME_STATUS_PREFS,
+                Context.MODE_PRIVATE);
+        final Object original = preferences.getAll().get(KEY);
+        final Map<String, ?> originalStatus = new HashMap<>(status.getAll());
+        SmallWindowFrameEditorActivity activity;
 
-    private static void restorePreference(SharedPreferences preferences, Object original) {
-        SharedPreferences.Editor editor = preferences.edit().remove(KEY);
-        if (original != null) put(editor, KEY, original);
-        assertTrue(editor.commit());
-    }
+        void clearAndOpen() { assertTrue(preferences.edit().remove(KEY).commit()); open(); }
 
-    private static void restorePreferences(SharedPreferences preferences, Map<String, ?> original) {
-        SharedPreferences.Editor editor = preferences.edit().clear();
-        for (Map.Entry<String, ?> entry : original.entrySet()) put(editor, entry.getKey(), entry.getValue());
-        assertTrue(editor.commit());
+        void open() {
+            activity = (SmallWindowFrameEditorActivity) instrumentation.startActivitySync(new Intent(context,
+                    SmallWindowFrameEditorActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_MULTIPLE_TASK | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS));
+            awaitLayout();
+        }
+
+        void awaitLayout() {
+            long deadline = SystemClock.uptimeMillis() + 10_000;
+            boolean[] laidOut = {false};
+            do {
+                instrumentation.waitForIdleSync();
+                instrumentation.runOnMainSync(() -> laidOut[0] = activity.getFrameEditor().getWidth() > 0
+                        && !activity.getFrameEditor().getFrameBoundsOnScreen().isEmpty());
+                if (laidOut[0]) return;
+                SystemClock.sleep(50);
+            } while (SystemClock.uptimeMillis() < deadline);
+            fail("Real-screen frame did not finish layout");
+        }
+
+        @Override public void close() {
+            if (activity != null) {
+                instrumentation.runOnMainSync(activity::finishAndRemoveTask);
+                instrumentation.waitForIdleSync();
+            }
+            SharedPreferences.Editor restore = preferences.edit().remove(KEY);
+            if (original != null) put(restore, KEY, original);
+            assertTrue(restore.commit());
+            instrumentation.waitForIdleSync();
+            SharedPreferences.Editor restoreStatus = status.edit().clear();
+            for (Map.Entry<String, ?> entry : originalStatus.entrySet()) put(restoreStatus, entry.getKey(), entry.getValue());
+            assertTrue(restoreStatus.commit());
+        }
     }
 
     @SuppressWarnings("unchecked")

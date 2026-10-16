@@ -79,8 +79,13 @@ public final class LinkAutomationController {
             return;
         }
         boolean frozen = !engine.isAppEnabled(info);
-        // A matched rule owns the handoff in both states; an enabled target needs no thaw.
         if (!frozen) {
+            if (LinkAutomationConfig.isOnlyFrozenEnabled(app)) {
+                LinkAutomationDiagnostics.record(app, "skip", uri.toString(),
+                        "TARGET_ALREADY_ENABLED target=" + target + " source=" + source);
+                finish(completion);
+                return;
+            }
             launch(app, uri, target, conversion, background, source, completion);
             return;
         }
@@ -279,8 +284,17 @@ public final class LinkAutomationController {
     private static LinkRuleEntry resolveRule(Context context, Uri uri, String sourcePackage) {
         java.util.List<LinkRuleEntry> matches = ScopedRuleResolver.matchingRules(
                 RuleConfigRepository.installedRuleEntries(context), sourcePackage, uri.getHost());
-        return ScopedRuleResolver.selectRule(matches,
-                new java.util.HashSet<>(ScopedRuleResolver.targetPackages(matches)));
+        java.util.Set<String> eligible = new java.util.HashSet<>();
+        boolean onlyFrozen = LinkAutomationConfig.isOnlyFrozenEnabled(context);
+        BaseEngine engine = EngineManager.getEngine(context);
+        for (String target : ScopedRuleResolver.targetPackages(matches)) {
+            ApplicationInfo info = onlyFrozen ? getApplicationInfo(context, target) : null;
+            // Hidden targets cannot be inspected here; the existing guarded thaw path verifies them.
+            if (!onlyFrozen || info == null || (isInstalled(info) && !engine.isAppEnabled(info))) {
+                eligible.add(target);
+            }
+        }
+        return ScopedRuleResolver.selectRule(matches, eligible);
     }
 
     private static boolean isInstalled(ApplicationInfo info) {
