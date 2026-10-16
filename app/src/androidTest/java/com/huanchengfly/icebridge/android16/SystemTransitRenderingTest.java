@@ -79,6 +79,37 @@ public class SystemTransitRenderingTest {
         assertTrue(card.getHeight() <= area.height());
     }
 
+    @Test public void cardUsesNativeVisibleCoordinatesWithoutApplyingMiuiScaleASecondTime() throws Exception {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        TransitPreviewActivity activity = openSmallWindow(instrumentation, false, SmallWindowLayout.DEFAULT);
+        try {
+            assertCompactCard(instrumentation, activity, "正在解冻");
+            awaitFocusedAndLaidOut(instrumentation, activity);
+            // Preserve the phone regression's asymmetric placement on any test display.
+            // The observer supplies visible coordinates; the renderer must not scale them again.
+            Rect available = SystemWindowLayout.availableBounds(activity);
+            int left = available.left + available.width() / 8;
+            int top = available.top + available.height() / 9;
+            Rect logical = new Rect(left, top, left + available.width() * 3 / 4,
+                    top + available.height() * 3 / 5);
+            Rect visible = new Rect(left, top, left + Math.round(logical.width() * 0.7f),
+                    top + Math.round(logical.height() * 0.7f));
+            instrumentation.runOnMainSync(() -> {
+                activity.show(1, SystemTransitPresenter.Stage.OPENING, 0xff7e57c2, "light");
+                activity.targetBounds(1, 7, 11, visible);
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> {
+                assertActualPlacement(activity.card(), visible);
+                activity.targetDrawn(1);
+                activity.targetBounds(1, 7, 11, logical);
+            });
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> assertNull(
+                    "A late native scale update must not recreate the dismissed card", activity.card()));
+        } finally { instrumentation.runOnMainSync(activity::finish); }
+    }
+
     @Test public void smallWindowCardIsSmallerAndCenteredInOffCenterTargetBounds() throws Exception {
         Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         SmallWindowLayout layout = new SmallWindowLayout(60, 50, 100, 0);

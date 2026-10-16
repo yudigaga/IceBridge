@@ -6,7 +6,7 @@ import android.os.Bundle;
 
 import com.huanchengfly.icebridge.automation.SmallWindowLayout;
 
-/** Requests the platform's freeform mode, leaving sizing and placement to the ROM. */
+/** Uses screen-visible bounds, including ROMs with a separate freeform surface scale. */
 public final class SystemFreeformLaunchOptions {
     private static final int WINDOWING_MODE_FREEFORM = 5;
 
@@ -19,6 +19,9 @@ public final class SystemFreeformLaunchOptions {
     public static Bundle create(Context context, SmallWindowLayout layout) throws ReflectiveOperationException {
         ActivityOptions options = basic();
         options.setLaunchBounds(SystemWindowLayout.resolve(context, layout));
+        // MIUI otherwise applies its default surface scale (0.7 on the reported device)
+        // to these already visual dimensions. Set it per launch, without changing ROM defaults.
+        SystemMiuiFreeform.configureUnscaledLaunch(options);
         return options.toBundle();
     }
 

@@ -81,6 +81,91 @@ public class SystemTaskBoundsObserverTest {
         assertEquals(0, observer.read(task).transitId);
     }
 
+    @Test public void nativeMiuiScaleConvertsLogicalTaskBoundsToTheVisiblePhoneFrame() {
+        SystemTaskBoundsObserver observer = new SystemTaskBoundsObserver();
+        Task task = new Task(7, 0, new Record(TARGET, 0, tagged(41)));
+        task.bounds.set(347, 315, 1369, 1644);
+        NativeStack stack = attachNativeStack(task, 0.7f);
+
+        TransitTaskBounds actual = observer.read(task);
+        assertNotNull(actual);
+        assertTrue(actual.isFreeform());
+        assertBounds(actual, 347, 315, 1062, 1245);
+        assertEquals("The framework's mutable logical bounds must remain untouched",
+                new Rect(347, 315, 1369, 1644), task.bounds);
+        assertEquals(7, stack.lastTaskId);
+    }
+
+    @Test public void nativeMiuiScaleOnlyChangesKeepTheSameTaskIdentityAndDoNotRescaleOldSnapshots() {
+        SystemTaskBoundsObserver observer = new SystemTaskBoundsObserver();
+        Task task = new Task(7, 0, new Record(TARGET, 0, tagged(41)));
+        task.bounds.set(347, 315, 1369, 1644);
+        NativeStack stack = attachNativeStack(task, 0.7f);
+        TransitTaskBounds scaled = observer.read(task);
+        assertNotNull(scaled);
+        assertBounds(scaled, 347, 315, 1062, 1245);
+
+        stack.scale = 1.0f;
+        TransitTaskBounds unscaled = observer.read(task);
+        assertNotNull(unscaled);
+        assertEquals(scaled.taskInstance, unscaled.taskInstance);
+        assertEquals(scaled.transitId, unscaled.transitId);
+        assertBounds(unscaled, 347, 315, 1369, 1644);
+        assertBounds(scaled, 347, 315, 1062, 1245);
+
+        stack.scale = 0.5f;
+        TransitTaskBounds smaller = observer.read(task);
+        assertNotNull(smaller);
+        assertEquals(scaled.taskInstance, smaller.taskInstance);
+        assertBounds(smaller, 347, 315, 858, 980);
+        assertEquals(new Rect(347, 315, 1369, 1644), task.bounds);
+    }
+
+    @Test public void invalidNativeScalesKeepFinitePositiveLogicalBoundsAsTheFallback() {
+        SystemTaskBoundsObserver observer = new SystemTaskBoundsObserver();
+        Task task = new Task(7, 0, new Record(TARGET, 0, tagged(41)));
+        task.bounds.set(347, 315, 1369, 1644);
+        NativeStack stack = attachNativeStack(task, 1.0f);
+        for (float invalid : new float[]{Float.NaN, Float.POSITIVE_INFINITY,
+                Float.NEGATIVE_INFINITY, 0.0f, -0.7f, -1.0f}) {
+            stack.scale = invalid;
+            TransitTaskBounds actual = observer.read(task);
+            assertNotNull("Malformed cosmetic metadata must not discard the task: " + invalid, actual);
+            assertTrue(actual.isFreeform());
+            assertBounds(actual, 347, 315, 1369, 1644);
+        }
+    }
+
+    @Test public void missingOrThrowingNativeStackFallsBackWithoutDiscardingTheTask() {
+        SystemTaskBoundsObserver observer = new SystemTaskBoundsObserver();
+        Task task = new Task(7, 0, new Record(TARGET, 0, tagged(41)));
+        task.bounds.set(347, 315, 1369, 1644);
+        NativeStack stack = attachNativeStack(task, 0.7f);
+        NativeManager manager = task.mAtmService.mMiuiFreeFormManagerService;
+        manager.stack = null;
+        assertBounds(observer.read(task), 347, 315, 1369, 1644);
+        manager.stack = stack;
+        manager.throwOnRead = true;
+        assertBounds(observer.read(task), 347, 315, 1369, 1644);
+        manager.throwOnRead = false;
+        task.mAtmService.mMiuiFreeFormManagerService = null;
+        assertBounds(observer.read(task), 347, 315, 1369, 1644);
+        task.mAtmService = null;
+        assertBounds(observer.read(task), 347, 315, 1369, 1644);
+    }
+
+    @Test public void staleNativeFreeformScaleCannotShrinkAFullscreenTaskSnapshot() {
+        SystemTaskBoundsObserver observer = new SystemTaskBoundsObserver();
+        Task task = new Task(7, 0, new Record(TARGET, 0, tagged(41)));
+        task.bounds.set(347, 315, 1369, 1644);
+        attachNativeStack(task, 0.7f);
+        task.mode = 1;
+        TransitTaskBounds actual = observer.read(task);
+        assertNotNull(actual);
+        assertFalse(actual.isFreeform());
+        assertBounds(actual, 347, 315, 1369, 1644);
+    }
+
     @Test public void observingMoreThan128LiveTasksDoesNotChangeAnExistingTaskIdentity() {
         SystemTaskBoundsObserver observer = new SystemTaskBoundsObserver();
         Task[] live = new Task[129];
@@ -126,6 +211,49 @@ public class SystemTaskBoundsObserverTest {
         return new Intent(Intent.ACTION_VIEW).putExtra(SystemTargetWindowObserver.EXTRA_TRANSIT_ID, id);
     }
 
+    private static void assertBounds(TransitTaskBounds actual, int left, int top, int right, int bottom) {
+        assertNotNull(actual);
+        assertEquals(left, actual.left);
+        assertEquals(top, actual.top);
+        assertEquals(right, actual.right);
+        assertEquals(bottom, actual.bottom);
+    }
+
+    private static NativeStack attachNativeStack(Task task, float scale) {
+        NativeStack stack = new NativeStack(task, scale);
+        task.mAtmService = new NativeAtmService(new NativeManager(stack));
+        return stack;
+    }
+
+    private static final class NativeAtmService {
+        NativeManager mMiuiFreeFormManagerService;
+        NativeAtmService(NativeManager manager) { mMiuiFreeFormManagerService = manager; }
+    }
+
+    private static final class NativeManager {
+        NativeStack stack;
+        boolean throwOnRead;
+        NativeManager(NativeStack stack) { this.stack = stack; }
+        NativeStack getMiuiFreeFormActivityStack(int taskId) {
+            if (throwOnRead) throw new IllegalStateException("fixture-native-stack-unavailable");
+            if (stack != null) stack.lastTaskId = taskId;
+            return stack;
+        }
+    }
+
+    private static final class NativeStack {
+        final Task mTask;
+        float scale;
+        int lastTaskId = -1;
+        NativeStack(Task task, float scale) { mTask = task; this.scale = scale; }
+        float getFreeFormScale() { return scale; }
+    }
+
+    // The native ATM service field can be inherited on vendor Task implementations.
+    private static class TaskContainer {
+        NativeAtmService mAtmService;
+    }
+
     private static final class Record {
         final String packageName;
         final int mUserId;
@@ -137,7 +265,7 @@ public class SystemTaskBoundsObserverTest {
         Task getTask() { return task; }
     }
 
-    private static final class Task {
+    private static final class Task extends TaskContainer {
         final int mTaskId;
         int mUserId;
         Record record;

@@ -40,7 +40,9 @@ public final class SystemTaskBoundsObserver {
             Object rawBounds = invoke(task, "getBounds");
             if (!(id instanceof Integer) || !(mode instanceof Integer)
                     || !(display instanceof Integer) || !(rawBounds instanceof Rect)) return null;
-            Rect bounds = (Rect) rawBounds;
+            Rect bounds = (Integer) mode == 5
+                    ? visualBounds((Rect) rawBounds, SystemMiuiFreeform.taskScale(task, (Integer) id))
+                    : new Rect((Rect) rawBounds);
             long transit = launches.transitId(activity);
             Long instance = instances.get(task);
             if (instance == null) {
@@ -69,11 +71,38 @@ public final class SystemTaskBoundsObserver {
             if (!(user instanceof Integer) || !(display instanceof Integer)
                     || !(mode instanceof Integer) || !(bounds instanceof Rect)) return null;
             Rect rect = (Rect) bounds;
+            if ((Integer) mode == 5) {
+                // Worker-only path. In system_server getService returns the local ATMS; in an
+                // ordinary app it returns a proxy and the optional vendor field read is a no-op.
+                Float scale = null;
+                try {
+                    Object service = Class.forName("android.app.ActivityTaskManager")
+                            .getMethod("getService").invoke(null);
+                    scale = SystemMiuiFreeform.atmsScale(service, info.id);
+                } catch (Throwable unavailable) { /* Keep unscaled AOSP geometry. */ }
+                rect = visualBounds(rect, scale);
+            }
             ComponentName top = info.topActivity;
             return new TransitTaskBounds(0, 0, info.id, (Integer) user, top.getPackageName(),
                     (Integer) display, (Integer) mode, rect.left, rect.top, rect.right, rect.bottom,
                     SystemClock.elapsedRealtime());
         } catch (Throwable unavailable) { return null; }
+    }
+
+    /** MIUI scales the extent around the logical top-left, not around the display origin. */
+    static Rect visualBounds(Rect logical, Float scale) {
+        Rect result = new Rect(logical);
+        if (scale == null || !Float.isFinite(scale) || scale <= 0 || scale > 4
+                || logical.isEmpty()) return result;
+        long width = Math.round((double) logical.width() * scale);
+        long height = Math.round((double) logical.height() * scale);
+        long right = (long) logical.left + width;
+        long bottom = (long) logical.top + height;
+        if (width > 0 && height > 0 && right <= Integer.MAX_VALUE && bottom <= Integer.MAX_VALUE) {
+            result.right = (int) right;
+            result.bottom = (int) bottom;
+        }
+        return result;
     }
 
     private static Object invoke(Object owner, String name) throws Exception {
