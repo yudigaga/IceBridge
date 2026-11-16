@@ -1,4 +1,16 @@
+<p align="center">
+  <img src="docs/assets/readme-banner.svg" alt="IceBridge · 应用先解冻，链接再抵达。" width="100%" />
+</p>
+
 # IceBridge
+
+[下载正式版](https://github.com/yudigaga/IceBridge/releases/latest) · [问题反馈](https://github.com/yudigaga/IceBridge/issues) · [安装与作用域](docs/NATIVE_LINK_CAPTURE.md)
+
+| 自动解冻 | 链接桥接 | 独立运行 |
+| --- | --- | --- |
+| IceBox SDK 或 Root 模式 | 按来源、域名和目标规则打开链接 | 配置确认后，可在本体冻结时继续工作 |
+
+---
 
 IceBridge is an Android LSPosed module that restores a frozen app before the system launches it. It supports both IceBox SDK mode and Root (`su`) mode.
 
